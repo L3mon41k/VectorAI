@@ -1,9 +1,13 @@
 package com.leemon41k.vectorai
 
 import android.os.Bundle
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -105,6 +109,9 @@ private fun VectorAIApp() {
     val chatViewModel: ChatViewModel = viewModel()
     val chatState by chatViewModel.state.collectAsState()
     val messages by chatViewModel.messages.collectAsState()
+    val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(chatViewModel::importModel)
+    }
 
     LaunchedEffect(Unit) {
         chatViewModel.prepare()
@@ -135,8 +142,11 @@ private fun VectorAIApp() {
                 messages = messages,
                 chatState = chatState,
                 onSendMessage = chatViewModel::send,
-                onDownloadModel = chatViewModel::downloadModel,
-                onRetryModel = chatViewModel::redownloadModel
+                onImportModel = { modelPicker.launch(arrayOf("*/*")) },
+                onOpenModelPage = {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://huggingface.co/litert-community/Gemma3-1B-IT/tree/main")))
+                },
+                onRetryModel = chatViewModel::retryLoadingModel
             )
         }
 
@@ -187,7 +197,8 @@ private fun MainNavigation(
     messages: List<ChatMessage>,
     chatState: ChatUiState,
     onSendMessage: (String) -> Unit,
-    onDownloadModel: () -> Unit,
+    onImportModel: () -> Unit,
+    onOpenModelPage: () -> Unit,
     onRetryModel: () -> Unit
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -243,7 +254,8 @@ private fun MainNavigation(
                 messages = messages,
                 chatState = chatState,
                 onSendMessage = onSendMessage,
-                onDownloadModel = onDownloadModel,
+                onImportModel = onImportModel,
+                onOpenModelPage = onOpenModelPage,
                 onRetryModel = onRetryModel
             )
         }
@@ -271,7 +283,8 @@ private fun ChatScreen(
     messages: List<ChatMessage>,
     chatState: ChatUiState,
     onSendMessage: (String) -> Unit,
-    onDownloadModel: () -> Unit,
+    onImportModel: () -> Unit,
+    onOpenModelPage: () -> Unit,
     onRetryModel: () -> Unit
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
@@ -338,7 +351,7 @@ private fun ChatScreen(
                         }
                         else -> {
                             Text(
-                                if (chatState.error != null) "Не удалось запустить локальную модель." else "Для первого запуска нужна локальная модель Qwen3 — около 586 МБ. После загрузки интернет для общения не понадобится.",
+                                "Новая модель: Gemma 3 1B IT от Google (около 584 МБ). Открой страницу модели, прими условия Gemma и скачай файл gemma3-1b-it-int4.litertlm. Затем выбери его ниже. После установки VectorAI будет работать офлайн.",
                                 color = Muted,
                                 fontSize = 13.sp,
                                 lineHeight = 19.sp
@@ -349,14 +362,21 @@ private fun ChatScreen(
                             }
                             Spacer(Modifier.height(14.dp))
                             Button(
-                                onClick = if (chatState.error != null) onRetryModel else onDownloadModel,
+                                onClick = onOpenModelPage,
                                 modifier = Modifier.fillMaxWidth().height(50.dp),
                                 shape = RoundedCornerShape(14.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Red)
                             ) {
+                                Text("Открыть страницу Gemma", color = Color.White, fontWeight = FontWeight.SemiBold)
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            TextButton(
+                                onClick = if (chatState.error != null && chatState.modelExists) onRetryModel else onImportModel,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
                                 Text(
-                                    if (chatState.error != null && chatState.modelExists) "Скачать модель заново" else if (chatState.error != null) "Повторить загрузку" else "Загрузить модель",
-                                    color = Color.White,
+                                    if (chatState.error != null && chatState.modelExists) "Повторить запуск" else "Выбрать файл модели",
+                                    color = SoftWhite,
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
