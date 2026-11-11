@@ -1,13 +1,9 @@
 package com.leemon41k.vectorai
 
 import android.os.Bundle
-import android.content.Intent
-import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -109,10 +105,6 @@ private fun VectorAIApp() {
     val chatViewModel: ChatViewModel = viewModel()
     val chatState by chatViewModel.state.collectAsState()
     val messages by chatViewModel.messages.collectAsState()
-    val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let(chatViewModel::importModel)
-    }
-
     LaunchedEffect(Unit) {
         chatViewModel.prepare()
     }
@@ -142,11 +134,7 @@ private fun VectorAIApp() {
                 messages = messages,
                 chatState = chatState,
                 onSendMessage = chatViewModel::send,
-                onImportModel = { modelPicker.launch(arrayOf("*/*")) },
-                onOpenModelPage = {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://huggingface.co/litert-community/Gemma3-1B-IT/tree/main")))
-                },
-                onRetryModel = chatViewModel::retryLoadingModel
+                onDownloadModel = chatViewModel::startDownload
             )
         }
 
@@ -197,9 +185,7 @@ private fun MainNavigation(
     messages: List<ChatMessage>,
     chatState: ChatUiState,
     onSendMessage: (String) -> Unit,
-    onImportModel: () -> Unit,
-    onOpenModelPage: () -> Unit,
-    onRetryModel: () -> Unit
+    onDownloadModel: () -> Unit
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -254,9 +240,7 @@ private fun MainNavigation(
                 messages = messages,
                 chatState = chatState,
                 onSendMessage = onSendMessage,
-                onImportModel = onImportModel,
-                onOpenModelPage = onOpenModelPage,
-                onRetryModel = onRetryModel
+                onDownloadModel = onDownloadModel
             )
         }
     }
@@ -283,9 +267,7 @@ private fun ChatScreen(
     messages: List<ChatMessage>,
     chatState: ChatUiState,
     onSendMessage: (String) -> Unit,
-    onImportModel: () -> Unit,
-    onOpenModelPage: () -> Unit,
-    onRetryModel: () -> Unit
+    onDownloadModel: () -> Unit
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
     val greeting = greetingForCurrentTime()
@@ -330,12 +312,12 @@ private fun ChatScreen(
                             )
                             Spacer(Modifier.height(8.dp))
                             val downloadedMb = chatState.downloadedBytes / 1_000_000
+                            Text("$downloadedMb / ${chatState.totalBytes / 1_000_000} МБ", color = Muted, fontSize = 12.sp)
+                            val speedMb = chatState.downloadSpeed / 1_000_000.0
+                            val eta = chatState.remainingSeconds
                             Text(
-                                if (chatState.totalBytes > 0L) {
-                                    "$downloadedMb / ${chatState.totalBytes / 1_000_000} МБ"
-                                } else {
-                                    "$downloadedMb МБ загружено"
-                                },
+                                (if (speedMb > 0) String.format(java.util.Locale.getDefault(), "%.1f МБ/с", speedMb) else "Скорость рассчитывается…") +
+                                    if (eta >= 0L) " · осталось ${eta / 60} мин ${eta % 60} сек" else "",
                                 color = Muted,
                                 fontSize = 12.sp
                             )
@@ -351,7 +333,7 @@ private fun ChatScreen(
                         }
                         else -> {
                             Text(
-                                "Для работы VectorAI нужна локальная модель (около 584 МБ). Открой страницу загрузки, выполни необходимые условия доступа и скачай файл модели. Затем выбери его ниже. После установки VectorAI будет работать офлайн.",
+                                "Для первого запуска нужно скачать локальную модель VectorAI (около 1,6 ГБ). Загрузка происходит прямо в приложении. После установки помощник сможет работать офлайн.",
                                 color = Muted,
                                 fontSize = 13.sp,
                                 lineHeight = 19.sp
@@ -362,21 +344,14 @@ private fun ChatScreen(
                             }
                             Spacer(Modifier.height(14.dp))
                             Button(
-                                onClick = onOpenModelPage,
+                                onClick = onDownloadModel,
                                 modifier = Modifier.fillMaxWidth().height(50.dp),
                                 shape = RoundedCornerShape(14.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Red)
                             ) {
-                                Text("Страница загрузки модели", color = Color.White, fontWeight = FontWeight.SemiBold)
-                            }
-                            Spacer(Modifier.height(8.dp))
-                            TextButton(
-                                onClick = onImportModel,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
                                 Text(
-                                    "Выбрать файл модели",
-                                    color = SoftWhite,
+                                    if (chatState.downloadedBytes > 0L) "Продолжить загрузку" else "Скачать модель",
+                                    color = Color.White,
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
