@@ -124,7 +124,6 @@ private fun VectorAIApp() {
                 userName = userName,
                 currentPage = currentPage,
                 onPageChange = { currentPage = it },
-                onVersionTap = { },
                 messages = messages,
                 onSendMessage = { text ->
                     messages.add(true to text)
@@ -177,16 +176,13 @@ private fun MainNavigation(
     userName: String,
     currentPage: String,
     onPageChange: (String) -> Unit,
-    onVersionTap: () -> Unit,
     messages: List<Pair<Boolean, String>>,
     onSendMessage: (String) -> Unit
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    if (currentPage == "admin") {
-        AdminScreen(onBack = { onPageChange("chat") })
-    } else ModalNavigationDrawer(
+    ModalNavigationDrawer(
         drawerState = drawerState,
         scrimColor = Color.Black.copy(alpha = 0.72f),
         drawerContent = {
@@ -218,21 +214,11 @@ private fun MainNavigation(
                     Spacer(Modifier.weight(1f))
                     Divider(color = Color.White.copy(alpha = 0.12f))
                     Spacer(Modifier.height(14.dp))
-                    var versionTaps by rememberSaveable { mutableStateOf(0) }
                     Text(
                         "Версия приложения 0.1.0",
                         color = Color(0xFF777777),
                         fontSize = 12.sp,
-                        modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                            .clickable {
-                                versionTaps += 1
-                                if (versionTaps >= 10) {
-                                    versionTaps = 0
-                                    onVersionTap()
-                                    onPageChange("admin")
-                                }
-                            }
-                            .padding(vertical = 8.dp, horizontal = 2.dp)
+                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 2.dp)
                     )
                 }
             }
@@ -240,7 +226,6 @@ private fun MainNavigation(
     ) {
         when (currentPage) {
             "settings" -> SettingsScreen(userName = userName, onBack = { onPageChange("chat") })
-            "admin" -> AdminScreen(onBack = { onPageChange("chat") })
             else -> ChatScreen(
                 userName = userName,
                 onMenu = { scope.launch { drawerState.open() } },
@@ -388,43 +373,6 @@ private fun SettingsScreen(userName: String, onBack: () -> Unit) {
         Spacer(Modifier.height(18.dp))
         Text("Анимация фона", color = SoftWhite, fontSize = 16.sp)
         Text("Геометрические элементы активны", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
-    }
-}
-
-@Composable
-private fun AdminScreen(onBack: () -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val preferences = remember { context.getSharedPreferences("vectorai_settings", android.content.Context.MODE_PRIVATE) }
-    var prompt by remember { mutableStateOf(preferences.getString("admin_prompt", "").orEmpty()) }
-    var saved by remember { mutableStateOf(false) }
-
-    Column(modifier = Modifier.fillMaxSize().padding(22.dp)) {
-        Text("←", color = SoftWhite, fontSize = 28.sp, modifier = Modifier.clickable(onClick = onBack))
-        Spacer(Modifier.height(22.dp))
-        Text("ADMIN", color = Red, fontSize = 12.sp, letterSpacing = 4.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        Text("Панель управления", color = SoftWhite, fontSize = 27.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(10.dp))
-        Text("Тестовый системный промпт. Сейчас он сохраняется только на этом устройстве.", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
-        Spacer(Modifier.height(22.dp))
-        OutlinedTextField(
-            value = prompt,
-            onValueChange = { prompt = it; saved = false },
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            placeholder = { Text("Напишите правила поведения VectorAI...", color = Muted) },
-            colors = vectorFieldColors(),
-            shape = RoundedCornerShape(16.dp)
-        )
-        Spacer(Modifier.height(14.dp))
-        Button(
-            onClick = {
-                preferences.edit().putString("admin_prompt", prompt).apply()
-                saved = true
-            },
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Red),
-            shape = RoundedCornerShape(14.dp)
-        ) { Text(if (saved) "Сохранено" else "Сохранить правила") }
     }
 }
 
