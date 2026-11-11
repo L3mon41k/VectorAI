@@ -226,7 +226,7 @@ private fun MainNavigation(
                     Divider(color = Color.White.copy(alpha = 0.12f))
                     Spacer(Modifier.height(14.dp))
                     Text(
-                        "Версия приложения 0.1.0",
+                        "Версия приложения 0.2.0",
                         color = Color(0xFF777777),
                         fontSize = 12.sp,
                         modifier = Modifier.padding(vertical = 8.dp, horizontal = 2.dp)
