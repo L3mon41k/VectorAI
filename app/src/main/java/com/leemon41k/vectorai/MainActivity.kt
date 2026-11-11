@@ -351,7 +351,7 @@ private fun ChatScreen(
                         }
                         else -> {
                             Text(
-                                "Новая модель: Gemma 3 1B IT от Google (около 584 МБ). Открой страницу модели, прими условия Gemma и скачай файл gemma3-1b-it-int4.litertlm. Затем выбери его ниже. После установки VectorAI будет работать офлайн.",
+                                "Для работы VectorAI нужна локальная модель (около 584 МБ). Открой страницу загрузки, выполни необходимые условия доступа и скачай файл модели. Затем выбери его ниже. После установки VectorAI будет работать офлайн.",
                                 color = Muted,
                                 fontSize = 13.sp,
                                 lineHeight = 19.sp
@@ -367,7 +367,7 @@ private fun ChatScreen(
                                 shape = RoundedCornerShape(14.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Red)
                             ) {
-                                Text("Открыть страницу Gemma", color = Color.White, fontWeight = FontWeight.SemiBold)
+                                Text("Страница загрузки модели", color = Color.White, fontWeight = FontWeight.SemiBold)
                             }
                             Spacer(Modifier.height(8.dp))
                             TextButton(
