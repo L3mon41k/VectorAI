@@ -22,9 +22,11 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -98,17 +100,10 @@ private fun VectorAIApp() {
         mutableStateOf(preferences.getString("user_name", "").orEmpty())
     }
     var currentPage by rememberSaveable { mutableStateOf("chat") }
-    var showPasswordDialog by rememberSaveable { mutableStateOf(false) }
-    var password by rememberSaveable { mutableStateOf("") }
     val messages = remember { mutableStateListOf<Pair<Boolean, String>>() }
 
-    BackHandler(enabled = currentPage != "chat" || showPasswordDialog) {
-        if (showPasswordDialog) {
-            showPasswordDialog = false
-            password = ""
-        } else {
-            currentPage = "chat"
-        }
+    BackHandler(enabled = currentPage != "chat") {
+        currentPage = "chat"
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Black)) {
@@ -129,7 +124,7 @@ private fun VectorAIApp() {
                 userName = userName,
                 currentPage = currentPage,
                 onPageChange = { currentPage = it },
-                onVersionTap = { showPasswordDialog = true },
+                onVersionTap = { },
                 messages = messages,
                 onSendMessage = { text ->
                     messages.add(true to text)
@@ -138,43 +133,6 @@ private fun VectorAIApp() {
             )
         }
 
-        if (showPasswordDialog) {
-            androidx.compose.ui.window.Dialog(onDismissRequest = {
-                showPasswordDialog = false
-                password = ""
-            }) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Panel).padding(22.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Text("Доступ", color = SoftWhite, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = { password = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        label = { Text("Пароль") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        colors = vectorFieldColors()
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        TextButton(onClick = {
-                            showPasswordDialog = false
-                            password = ""
-                        }) { Text("Отмена", color = Muted) }
-                        Button(
-                            onClick = {
-                                if (password == "1234") currentPage = "admin"
-                                showPasswordDialog = false
-                                password = ""
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Red)
-                        ) { Text("Войти") }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -226,7 +184,9 @@ private fun MainNavigation(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    ModalNavigationDrawer(
+    if (currentPage == "admin") {
+        AdminScreen(onBack = { onPageChange("chat") })
+    } else ModalNavigationDrawer(
         drawerState = drawerState,
         scrimColor = Color.Black.copy(alpha = 0.72f),
         drawerContent = {
@@ -258,11 +218,21 @@ private fun MainNavigation(
                     Spacer(Modifier.weight(1f))
                     Divider(color = Color.White.copy(alpha = 0.12f))
                     Spacer(Modifier.height(14.dp))
+                    var versionTaps by rememberSaveable { mutableStateOf(0) }
                     Text(
                         "Версия приложения 0.1.0",
                         color = Color(0xFF777777),
                         fontSize = 12.sp,
-                        modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { onVersionTap() }.padding(vertical = 8.dp, horizontal = 2.dp)
+                        modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                            .clickable {
+                                versionTaps += 1
+                                if (versionTaps >= 10) {
+                                    versionTaps = 0
+                                    onVersionTap()
+                                    onPageChange("admin")
+                                }
+                            }
+                            .padding(vertical = 8.dp, horizontal = 2.dp)
                     )
                 }
             }
@@ -305,12 +275,23 @@ private fun ChatScreen(
     var draft by rememberSaveable { mutableStateOf("") }
     val greeting = greetingForCurrentTime()
 
-    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp)) {
+    Column(
+        modifier = Modifier.fillMaxSize()
+            .statusBarsPadding()
+            .imePadding()
+            .padding(horizontal = 18.dp)
+    ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 26.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 26.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("☰", color = SoftWhite, fontSize = 27.sp, modifier = Modifier.clickable(onClick = onMenu).padding(6.dp))
+            Canvas(
+                modifier = Modifier.size(width = 30.dp, height = 28.dp).clickable(onClick = onMenu)
+            ) {
+                val lineColor = SoftWhite
+                drawLine(lineColor, androidx.compose.ui.geometry.Offset(3f, size.height * 0.34f), androidx.compose.ui.geometry.Offset(size.width - 3f, size.height * 0.34f), strokeWidth = 2.2f)
+                drawLine(lineColor, androidx.compose.ui.geometry.Offset(3f, size.height * 0.68f), androidx.compose.ui.geometry.Offset(size.width - 3f, size.height * 0.68f), strokeWidth = 2.2f)
+            }
             Spacer(Modifier.width(12.dp))
             Text("VECTORAI", color = SoftWhite, fontSize = 14.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
