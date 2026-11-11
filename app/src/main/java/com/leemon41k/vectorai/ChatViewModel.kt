@@ -216,9 +216,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 ConversationConfig(
                     systemInstruction = Contents.of(VECTORAI_SYSTEM_PROMPT),
                     samplerConfig = SamplerConfig(
-                        topK = 20,
+                        topK = 40,
                         topP = 0.9,
-                        temperature = 0.7
+                        temperature = 0.3
                     )
                 )
             )
