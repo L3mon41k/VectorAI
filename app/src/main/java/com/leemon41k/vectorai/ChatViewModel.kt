@@ -1,6 +1,7 @@
 package com.leemon41k.vectorai
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Contents
@@ -12,8 +13,6 @@ import com.google.ai.edge.litertlm.SamplerConfig
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,11 +49,9 @@ data class ChatUiState(
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
-        private const val MODEL_URL =
-            "https://huggingface.co/litert-community/Qwen3-0.6B/resolve/main/Qwen3-0.6B.litertlm"
-        private const val MODEL_FILE_NAME = "vectorai-qwen3-0.6b.litertlm"
-        private const val MIN_MODEL_SIZE = 500_000_000L
-        private const val MAX_MODEL_SIZE = 700_000_000L
+        private const val MODEL_FILE_NAME = "vectorai-gemma3-1b-it-int4.litertlm"
+        private const val MIN_MODEL_SIZE = 570_000_000L
+        private const val MAX_MODEL_SIZE = 610_000_000L
     }
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -88,34 +85,74 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun downloadModel() {
-        scope.launch {
-            mutex.withLock {
-                if (_state.value.isDownloading || _state.value.isLoading || _state.value.modelReady) {
-                    return@withLock
-                }
-                downloadAndLoadLocked()
-            }
-        }
-    }
-
-    fun redownloadModel() {
-        scope.launch {
-            mutex.withLock {
-                releaseLocked()
-                modelFile.delete()
-                downloadAndLoadLocked()
-            }
-        }
-    }
-
     fun retryLoadingModel() {
         scope.launch {
             mutex.withLock {
                 if (modelFile.isFile && modelFile.length() in MIN_MODEL_SIZE..MAX_MODEL_SIZE) {
                     loadModelLocked()
                 } else {
-                    downloadAndLoadLocked()
+                    _state.update { it.copy(error = "Сначала выбери файл Gemma 3 (.litertlm).") }
+                }
+            }
+        }
+    }
+
+    fun importModel(uri: Uri) {
+        scope.launch {
+            mutex.withLock {
+                if (_state.value.isDownloading || _state.value.isLoading) return@withLock
+                releaseLocked()
+                val partialFile = File(getApplication<Application>().cacheDir, "$MODEL_FILE_NAME.part")
+                _state.value = ChatUiState(isDownloading = true, error = null)
+                try {
+                    withContext(Dispatchers.IO) {
+                        val resolver = getApplication<Application>().contentResolver
+                        val input = resolver.openInputStream(uri)
+                            ?: throw IOException("Не удалось открыть выбранный файл.")
+                        input.use { source ->
+                            FileOutputStream(partialFile).use { output ->
+                                val buffer = ByteArray(1024 * 1024)
+                                var copied = 0L
+                                while (true) {
+                                    val count = source.read(buffer)
+                                    if (count < 0) break
+                                    output.write(buffer, 0, count)
+                                    copied += count
+                                    _state.update {
+                                        it.copy(
+                                            downloadedBytes = copied,
+                                            totalBytes = 584_000_000L,
+                                            downloadProgress = (copied.toFloat() / 584_000_000f).coerceIn(0f, 1f)
+                                        )
+                                    }
+                                }
+                                output.fd.sync()
+                            }
+                        }
+                    }
+                    if (partialFile.length() !in MIN_MODEL_SIZE..MAX_MODEL_SIZE) {
+                        throw IOException("Неверный файл. Нужен gemma3-1b-it-int4.litertlm размером около 584 МБ.")
+                    }
+                    if (modelFile.exists() && !modelFile.delete()) {
+                        throw IOException("Не удалось заменить предыдущий файл модели.")
+                    }
+                    if (!partialFile.renameTo(modelFile)) {
+                        throw IOException("Не удалось сохранить файл Gemma.")
+                    }
+                    File(getApplication<Application>().filesDir, "vectorai-qwen3-0.6b.litertlm").delete()
+                    _state.update { it.copy(isDownloading = false, modelExists = true, isLoading = true) }
+                    loadModelLocked()
+                } catch (error: Exception) {
+                    partialFile.delete()
+                    _state.update {
+                        it.copy(
+                            isDownloading = false,
+                            isLoading = false,
+                            modelReady = false,
+                            modelExists = modelFile.exists(),
+                            error = error.localizedMessage ?: "Не удалось импортировать модель."
+                        )
+                    }
                 }
             }
         }
@@ -160,87 +197,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 current.dropLast(1) + current.last().copy(text = text)
             } else {
                 current + ChatMessage(isUser = false, text = text)
-            }
-        }
-    }
-
-    private suspend fun downloadAndLoadLocked() {
-        val partialFile = File(getApplication<Application>().cacheDir, "$MODEL_FILE_NAME.part")
-        _state.value = ChatUiState(isDownloading = true, error = null)
-
-        try {
-            withContext(Dispatchers.IO) {
-                val connection = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 20_000
-                    readTimeout = 60_000
-                    instanceFollowRedirects = true
-                    setRequestProperty("User-Agent", "VectorAI-Android")
-                    setRequestProperty("Accept-Encoding", "identity")
-                }
-
-                try {
-                    val responseCode = connection.responseCode
-                    if (responseCode !in 200..299) {
-                        throw IOException("Сервер модели ответил кодом $responseCode.")
-                    }
-
-                    val expectedSize = connection.contentLengthLong
-                    var downloaded = 0L
-                    connection.inputStream.use { input ->
-                        FileOutputStream(partialFile).use { output ->
-                            val buffer = ByteArray(1024 * 1024)
-                            while (true) {
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                output.write(buffer, 0, count)
-                                downloaded += count
-                                val progress = if (expectedSize > 0L) {
-                                    (downloaded.toDouble() / expectedSize.toDouble()).toFloat().coerceIn(0f, 1f)
-                                } else {
-                                    0f
-                                }
-                                _state.update {
-                                    it.copy(
-                                        downloadProgress = progress,
-                                        downloadedBytes = downloaded,
-                                        totalBytes = expectedSize
-                                    )
-                                }
-                            }
-                            output.fd.sync()
-                        }
-                    }
-
-                    if (expectedSize > 0L && partialFile.length() != expectedSize) {
-                        throw IOException("Загрузка прервалась: размер файла не совпадает.")
-                    }
-                    if (partialFile.length() !in MIN_MODEL_SIZE..MAX_MODEL_SIZE) {
-                        throw IOException("Размер загруженной модели не совпадает с ожидаемым.")
-                    }
-
-                    if (modelFile.exists() && !modelFile.delete()) {
-                        throw IOException("Не удалось заменить старый файл модели.")
-                    }
-                    if (!partialFile.renameTo(modelFile)) {
-                        throw IOException("Не удалось сохранить файл модели.")
-                    }
-                } finally {
-                    connection.disconnect()
-                }
-            }
-
-            _state.update { it.copy(isDownloading = false, modelExists = true, isLoading = true) }
-            loadModelLocked()
-        } catch (error: Exception) {
-            partialFile.delete()
-            _state.update {
-                it.copy(
-                    isDownloading = false,
-                    isLoading = false,
-                    modelReady = false,
-                    modelExists = modelFile.exists(),
-                    error = error.localizedMessage ?: "Не удалось загрузить модель."
-                )
             }
         }
     }
