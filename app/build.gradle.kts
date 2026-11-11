@@ -12,8 +12,8 @@ android {
         applicationId = "com.leemon41k.vectorai"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     buildFeatures {
@@ -39,5 +39,8 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.1")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.1")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.1")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
