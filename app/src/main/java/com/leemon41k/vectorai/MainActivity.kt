@@ -371,11 +371,11 @@ private fun ChatScreen(
                             }
                             Spacer(Modifier.height(8.dp))
                             TextButton(
-                                onClick = if (chatState.error != null && chatState.modelExists) onRetryModel else onImportModel,
+                                onClick = onImportModel,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text(
-                                    if (chatState.error != null && chatState.modelExists) "Повторить запуск" else "Выбрать файл модели",
+                                    "Выбрать файл модели",
                                     color = SoftWhite,
                                     fontWeight = FontWeight.SemiBold
                                 )
