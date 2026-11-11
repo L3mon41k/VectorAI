@@ -57,7 +57,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private const val PART_FILE_NAME = "$MODEL_FILE_NAME.part"
         private const val EXPECTED_MODEL_SIZE = 1_597_931_520L
         private const val EXPECTED_MODEL_SHA256 = "c4a9b7289365ab80fe599b844b77ad253eb3c53fb0e5d963d699146a6f01255e"
-        private const val MODEL_URL = "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm"    }
+        private const val MODEL_URL = "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm"
+    }
 
     private val executor = Executors.newSingleThreadExecutor()
     private val scope = CoroutineScope(SupervisorJob() + executor.asCoroutineDispatcher())
@@ -158,6 +159,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
+
     fun send(text: String) {
         val cleaned = text.trim()
         if (cleaned.isEmpty()) return
