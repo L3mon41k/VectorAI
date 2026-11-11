@@ -312,7 +312,7 @@ private fun ChatScreen(
                             )
                             Spacer(Modifier.height(8.dp))
                             val downloadedMb = chatState.downloadedBytes / 1_000_000
-                            Text("$downloadedMb / ${chatState.totalBytes / 1_000_000} МБ", color = Muted, fontSize = 12.sp)
+                            Text("$downloadedMb / ${chatState.totalBytes / 1_000_000} МБ · ${(chatState.downloadProgress * 100).toInt()}%", color = Muted, fontSize = 12.sp)
                             val speedMb = chatState.downloadSpeed / 1_000_000.0
                             val eta = chatState.remainingSeconds
                             Text(
