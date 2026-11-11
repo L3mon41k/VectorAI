@@ -38,6 +38,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -47,8 +48,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -63,7 +65,6 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -100,7 +101,13 @@ private fun VectorAIApp() {
         mutableStateOf(preferences.getString("user_name", "").orEmpty())
     }
     var currentPage by rememberSaveable { mutableStateOf("chat") }
-    val messages = remember { mutableStateListOf<Pair<Boolean, String>>() }
+    val chatViewModel: ChatViewModel = viewModel()
+    val chatState by chatViewModel.state.collectAsState()
+    val messages by chatViewModel.messages.collectAsState()
+
+    LaunchedEffect(Unit) {
+        chatViewModel.prepare()
+    }
 
     BackHandler(enabled = currentPage != "chat") {
         currentPage = "chat"
@@ -125,10 +132,10 @@ private fun VectorAIApp() {
                 currentPage = currentPage,
                 onPageChange = { currentPage = it },
                 messages = messages,
-                onSendMessage = { text ->
-                    messages.add(true to text)
-                    messages.add(false to "Я пока нахожусь в режиме интерфейса. Модуль VectorAI Chat подключим на следующем этапе.")
-                }
+                chatState = chatState,
+                onSendMessage = chatViewModel::send,
+                onDownloadModel = chatViewModel::downloadModel,
+                onRetryModel = chatViewModel::redownloadModel
             )
         }
 
@@ -176,8 +183,11 @@ private fun MainNavigation(
     userName: String,
     currentPage: String,
     onPageChange: (String) -> Unit,
-    messages: List<Pair<Boolean, String>>,
-    onSendMessage: (String) -> Unit
+    messages: List<ChatMessage>,
+    chatState: ChatUiState,
+    onSendMessage: (String) -> Unit,
+    onDownloadModel: () -> Unit,
+    onRetryModel: () -> Unit
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -225,12 +235,15 @@ private fun MainNavigation(
         }
     ) {
         when (currentPage) {
-            "settings" -> SettingsScreen(userName = userName, onBack = { onPageChange("chat") })
+            "settings" -> SettingsScreen(userName = userName)
             else -> ChatScreen(
                 userName = userName,
                 onMenu = { scope.launch { drawerState.open() } },
                 messages = messages,
-                onSendMessage = onSendMessage
+                chatState = chatState,
+                onSendMessage = onSendMessage,
+                onDownloadModel = onDownloadModel,
+                onRetryModel = onRetryModel
             )
         }
     }
@@ -254,8 +267,11 @@ private fun DrawerEntry(title: String, selected: Boolean, onClick: () -> Unit) {
 private fun ChatScreen(
     userName: String,
     onMenu: () -> Unit,
-    messages: List<Pair<Boolean, String>>,
-    onSendMessage: (String) -> Unit
+    messages: List<ChatMessage>,
+    chatState: ChatUiState,
+    onSendMessage: (String) -> Unit,
+    onDownloadModel: () -> Unit,
+    onRetryModel: () -> Unit
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
     val greeting = greetingForCurrentTime()
@@ -267,20 +283,16 @@ private fun ChatScreen(
             .padding(horizontal = 18.dp)
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 26.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Canvas(
-                modifier = Modifier.size(width = 30.dp, height = 28.dp).clickable(onClick = onMenu)
+                modifier = Modifier.size(44.dp).clickable(onClick = onMenu)
             ) {
                 val lineColor = SoftWhite
                 drawLine(lineColor, androidx.compose.ui.geometry.Offset(3f, size.height * 0.34f), androidx.compose.ui.geometry.Offset(size.width - 3f, size.height * 0.34f), strokeWidth = 2.2f)
                 drawLine(lineColor, androidx.compose.ui.geometry.Offset(3f, size.height * 0.68f), androidx.compose.ui.geometry.Offset(size.width - 3f, size.height * 0.68f), strokeWidth = 2.2f)
             }
-            Spacer(Modifier.width(12.dp))
-            Text("VECTORAI", color = SoftWhite, fontSize = 14.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.weight(1f))
-            Box(Modifier.size(8.dp).clip(CircleShape).background(Red))
         }
 
         if (messages.isEmpty()) {
@@ -289,6 +301,67 @@ private fun ChatScreen(
                 Text(userName, color = Red, fontSize = 29.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(14.dp))
                 Text("Чем займёмся сегодня?", color = Muted, fontSize = 15.sp)
+
+                if (!chatState.modelReady) {
+                    Spacer(Modifier.height(28.dp))
+                    when {
+                        chatState.isDownloading -> {
+                            Text("Загружаю локальную модель…", color = SoftWhite, fontSize = 14.sp)
+                            Spacer(Modifier.height(12.dp))
+                            LinearProgressIndicator(
+                                progress = chatState.downloadProgress,
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Red,
+                                trackColor = Color.White.copy(alpha = 0.12f)
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            val downloadedMb = chatState.downloadedBytes / 1_000_000
+                            Text(
+                                if (chatState.totalBytes > 0L) {
+                                    "$downloadedMb / ${chatState.totalBytes / 1_000_000} МБ"
+                                } else {
+                                    "$downloadedMb МБ загружено"
+                                },
+                                color = Muted,
+                                fontSize = 12.sp
+                            )
+                        }
+                        chatState.isLoading -> {
+                            Text("Запускаю VectorAI…", color = Muted, fontSize = 14.sp)
+                            Spacer(Modifier.height(10.dp))
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Red,
+                                trackColor = Color.White.copy(alpha = 0.12f)
+                            )
+                        }
+                        else -> {
+                            Text(
+                                if (chatState.error != null) "Не удалось запустить локальную модель." else "Для первого запуска нужна локальная модель Qwen3 — около 586 МБ. После загрузки интернет для общения не понадобится.",
+                                color = Muted,
+                                fontSize = 13.sp,
+                                lineHeight = 19.sp
+                            )
+                            chatState.error?.let {
+                                Spacer(Modifier.height(8.dp))
+                                Text(it, color = Color(0xFFFF7777), fontSize = 12.sp, lineHeight = 17.sp)
+                            }
+                            Spacer(Modifier.height(14.dp))
+                            Button(
+                                onClick = if (chatState.error != null) onRetryModel else onDownloadModel,
+                                modifier = Modifier.fillMaxWidth().height(50.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Red)
+                            ) {
+                                Text(
+                                    if (chatState.error != null && chatState.modelExists) "Скачать модель заново" else if (chatState.error != null) "Повторить загрузку" else "Загрузить модель",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
             }
         } else {
             LazyColumn(
@@ -302,15 +375,15 @@ private fun ChatScreen(
                 itemsIndexed(messages) { _, message ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = if (message.first) Arrangement.End else Arrangement.Start
+                        horizontalArrangement = if (message.isUser) Arrangement.End else Arrangement.Start
                     ) {
                         Box(
                             modifier = Modifier.fillMaxWidth(0.88f)
                                 .clip(RoundedCornerShape(16.dp))
-                                .background(if (message.first) Color(0xFF251113) else Color(0xFF171717))
+                                .background(if (message.isUser) Color(0xFF251113) else Color(0xFF171717))
                                 .padding(14.dp)
                         ) {
-                            Text(message.second, color = SoftWhite, fontSize = 14.sp, lineHeight = 20.sp)
+                            Text(message.text, color = SoftWhite, fontSize = 14.sp, lineHeight = 20.sp)
                         }
                     }
                 }
@@ -324,13 +397,14 @@ private fun ChatScreen(
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
+                enabled = chatState.modelReady && !chatState.isBusy,
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Сообщение VectorAI...", color = Muted, fontSize = 14.sp) },
                 shape = RoundedCornerShape(18.dp),
                 maxLines = 4,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = {
-                    if (draft.isNotBlank()) {
+                    if (draft.isNotBlank() && chatState.modelReady && !chatState.isBusy) {
                         onSendMessage(draft.trim())
                         draft = ""
                     }
@@ -355,10 +429,8 @@ private fun ChatScreen(
 }
 
 @Composable
-private fun SettingsScreen(userName: String, onBack: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().statusBarsPadding().padding(top = 16.dp, start = 22.dp, end = 22.dp, bottom = 22.dp)) {
-        Text("←", color = SoftWhite, fontSize = 28.sp, modifier = Modifier.clickable(onClick = onBack))
-        Spacer(Modifier.height(26.dp))
+private fun SettingsScreen(userName: String) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding().padding(top = 22.dp, start = 22.dp, end = 22.dp, bottom = 22.dp)) {
         Text("Настройки", color = SoftWhite, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(24.dp))
         Text("ПРОФИЛЬ", color = Muted, fontSize = 11.sp, letterSpacing = 2.sp)
