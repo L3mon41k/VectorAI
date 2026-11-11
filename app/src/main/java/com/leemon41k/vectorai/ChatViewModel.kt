@@ -134,7 +134,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val answer = StringBuilder()
             try {
                 val activeConversation = conversation ?: throw IllegalStateException("Локальная модель ещё не готова.")
-                activeConversation.sendMessageAsync(cleaned).collect { chunk ->
+                activeConversation.sendMessageAsync(
+                    cleaned,
+                    extraContext = mapOf("enable_thinking" to false)
+                ).collect { chunk ->
                     answer.append(chunk.toString())
                     updateLastAssistant(answer.toString())
                 }
