@@ -48,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -415,7 +416,7 @@ private fun ChatScreen(
             Box(
                 modifier = Modifier.size(50.dp).clip(CircleShape).background(Red)
                     .clickable {
-                        if (draft.isNotBlank()) {
+                        if (draft.isNotBlank() && chatState.modelReady && !chatState.isBusy) {
                             onSendMessage(draft.trim())
                             draft = ""
                         }
