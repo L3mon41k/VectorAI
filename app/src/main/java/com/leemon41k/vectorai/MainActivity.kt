@@ -195,7 +195,7 @@ private fun MainNavigation(
                 drawerContainerColor = Panel,
                 windowInsets = WindowInsets.navigationBars
             ) {
-                Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+                Column(modifier = Modifier.fillMaxSize().statusBarsPadding().padding(20.dp)) {
                     Text("НАСТРОЙКИ", color = Muted, fontSize = 11.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(12.dp))
                     DrawerEntry("Настройки", selected = currentPage == "settings") {
@@ -371,7 +371,7 @@ private fun ChatScreen(
 
 @Composable
 private fun SettingsScreen(userName: String, onBack: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().padding(22.dp)) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding().padding(top = 16.dp, start = 22.dp, end = 22.dp, bottom = 22.dp)) {
         Text("←", color = SoftWhite, fontSize = 28.sp, modifier = Modifier.clickable(onClick = onBack))
         Spacer(Modifier.height(26.dp))
         Text("Настройки", color = SoftWhite, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
