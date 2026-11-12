@@ -48,7 +48,10 @@ data class ChatUiState(
     val totalBytes: Long = 0L,
     val downloadSpeed: Long = 0L,
     val remainingSeconds: Long = -1L,
-    val error: String? = null
+    val error: String? = null,
+    val requestsUsed: Int = 0,
+    val requestsRemaining: Int = 150,
+    val limitReached: Boolean = false
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -58,6 +61,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private const val EXPECTED_MODEL_SIZE = 1_597_931_520L
         private const val EXPECTED_MODEL_SHA256 = "c4a9b7289365ab80fe599b844b77ad253eb3c53fb0e5d963d699146a6f01255e"
         private const val MODEL_URL = "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm"
+        private const val REQUEST_LIMIT = 150
+        private const val QUOTA_PREFS = "vectorai_request_quota"
     }
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -65,6 +70,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val mutex = Mutex()
     private val modelFile = File(application.filesDir, MODEL_FILE_NAME)
     private val partialFile = File(application.filesDir, PART_FILE_NAME)
+    private val quotaPrefs = application.getSharedPreferences(QUOTA_PREFS, android.content.Context.MODE_PRIVATE)
 
     private var engine: Engine? = null
     private var conversation: Conversation? = null
@@ -76,6 +82,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
     fun prepare() {
+        refreshQuota()
         scope.launch {
             mutex.withLock {
                 if (_state.value.modelReady || _state.value.isLoading || _state.value.isDownloading) {
@@ -114,41 +121,105 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun downloadModel() = withContext(Dispatchers.IO) {
+        downloadModelAttempt(retryAfter416 = true)
+    }
+
+    private suspend fun downloadModelAttempt(retryAfter416: Boolean) {
         var offset = partialFile.length()
-        if (offset > EXPECTED_MODEL_SIZE) { partialFile.delete(); offset = 0L }
+        if (offset > EXPECTED_MODEL_SIZE) {
+            partialFile.delete()
+            offset = 0L
+        }
+        if (offset == EXPECTED_MODEL_SIZE) return
+
         val connection = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
-            instanceFollowRedirects = true; connectTimeout = 30_000; readTimeout = 60_000
+            instanceFollowRedirects = true
+            connectTimeout = 30_000
+            readTimeout = 60_000
             setRequestProperty("User-Agent", "VectorAI-Android")
+            setRequestProperty("Accept-Encoding", "identity")
             if (offset > 0L) setRequestProperty("Range", "bytes=$offset-")
         }
+
         try {
             connection.connect()
             val status = connection.responseCode
+
+            if (status == 416 && retryAfter416) {
+                connection.disconnect()
+                partialFile.delete()
+                return downloadModelAttempt(retryAfter416 = false)
+            }
+
             val append = offset > 0L && status == HttpURLConnection.HTTP_PARTIAL
-            if (status != HttpURLConnection.HTTP_OK && !append) throw IOException("Ошибка сервера: HTTP $status.")
-            if (offset > 0L && status == HttpURLConnection.HTTP_OK) offset = 0L
+            if (status != HttpURLConnection.HTTP_OK && !append) {
+                throw IOException("Ошибка сервера: HTTP $status.")
+            }
+
+            if (append) {
+                val contentRange = connection.getHeaderField("Content-Range")
+                    ?: throw IOException("Сервер не подтвердил диапазон докачки.")
+                val match = Regex("bytes (\\d+)-(\\d+)/(\\d+)").matchEntire(contentRange.trim())
+                    ?: throw IOException("Некорректный Content-Range от сервера.")
+                val rangeStart = match.groupValues[1].toLong()
+                val rangeEnd = match.groupValues[2].toLong()
+                val remoteTotal = match.groupValues[3].toLong()
+                if (rangeStart != offset || rangeEnd < rangeStart || remoteTotal != EXPECTED_MODEL_SIZE) {
+                    connection.disconnect()
+                    partialFile.delete()
+                    if (retryAfter416) return downloadModelAttempt(retryAfter416 = false)
+                    throw IOException("Диапазон загрузки не совпадает с локальным файлом.")
+                }
+            } else if (offset > 0L && status == HttpURLConnection.HTTP_OK) {
+                offset = 0L
+            }
+
+            val responseLength = connection.contentLengthLong
+            if (responseLength > 0L && offset + responseLength > EXPECTED_MODEL_SIZE) {
+                throw IOException("Сервер передал файл неожиданного размера.")
+            }
+
             FileOutputStream(partialFile, append).use { output ->
                 connection.inputStream.use { input ->
-                    val buffer = ByteArray(262144); var countTotal = offset
-                    var lastTime = System.nanoTime(); var lastCount = countTotal
+                    val buffer = ByteArray(262144)
+                    var countTotal = offset
+                    var lastTime = System.nanoTime()
+                    var lastCount = countTotal
                     while (true) {
-                        val n = input.read(buffer); if (n < 0) break
-                        output.write(buffer, 0, n); countTotal += n
-                        if (countTotal > EXPECTED_MODEL_SIZE) throw IOException("Получен файл неожиданного размера.")
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        output.write(buffer, 0, n)
+                        countTotal += n
+                        if (countTotal > EXPECTED_MODEL_SIZE) {
+                            throw IOException("Получен файл неожиданного размера.")
+                        }
                         val now = System.nanoTime()
                         if (now - lastTime >= 500_000_000L) {
                             val seconds = (now - lastTime) / 1_000_000_000.0
                             val speed = ((countTotal - lastCount) / seconds).toLong().coerceAtLeast(0L)
                             val eta = if (speed > 0L) (EXPECTED_MODEL_SIZE - countTotal) / speed else -1L
-                            _state.update { it.copy(downloadedBytes = countTotal, totalBytes = EXPECTED_MODEL_SIZE, downloadProgress = (countTotal.toFloat() / EXPECTED_MODEL_SIZE).coerceIn(0f, 1f), downloadSpeed = speed, remainingSeconds = eta) }
-                            lastTime = now; lastCount = countTotal
+                            _state.update {
+                                it.copy(
+                                    downloadedBytes = countTotal,
+                                    totalBytes = EXPECTED_MODEL_SIZE,
+                                    downloadProgress = (countTotal.toFloat() / EXPECTED_MODEL_SIZE).coerceIn(0f, 1f),
+                                    downloadSpeed = speed,
+                                    remainingSeconds = eta
+                                )
+                            }
+                            lastTime = now
+                            lastCount = countTotal
                         }
                     }
                     output.fd.sync()
-                    if (countTotal != EXPECTED_MODEL_SIZE) throw IOException("Загружено " + countTotal / 1_000_000 + " из " + EXPECTED_MODEL_SIZE / 1_000_000 + " МБ. Нажми «Продолжить загрузку».")
+                    if (countTotal != EXPECTED_MODEL_SIZE) {
+                        throw IOException("Загружено ${countTotal / 1_000_000} из ${EXPECTED_MODEL_SIZE / 1_000_000} МБ. Нажми «Продолжить загрузку».")
+                    }
                 }
             }
-        } finally { connection.disconnect() }
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun sha256(file: File): String {
@@ -166,6 +237,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         scope.launch {
             if (!_state.value.modelReady || _state.value.isBusy) return@launch
+            if (!consumeRequest()) {
+                _messages.update { it + ChatMessage(isUser = false, text = "Достигнут лимит запросов, попробуйте позже") }
+                return@launch
+            }
 
             _messages.update { it + ChatMessage(isUser = true, text = cleaned) + ChatMessage(isUser = false, text = "") }
             _state.update { it.copy(isBusy = true, error = null) }
@@ -173,8 +248,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val answer = StringBuilder()
             try {
                 val activeConversation = conversation ?: throw IllegalStateException("Локальная модель ещё не готова.")
+                val knowledge = LocalKnowledgeBase.findRelevant(cleaned)
+                val modelInput = if (knowledge.isBlank()) cleaned else
+                    "Дополнительные сведения из локальной базы VectorAI. Используй их, если они относятся к вопросу; не выдумывай недостающие факты.\\n$knowledge\\n\\nВопрос пользователя: $cleaned"
                 activeConversation.sendMessageAsync(
-                    cleaned,
+                    modelInput,
                     extraContext = mapOf("enable_thinking" to false)
                 ).collect { chunk ->
                     answer.append(chunk.toString())
@@ -191,6 +269,47 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update { it.copy(isBusy = false) }
             }
         }
+    }
+
+    private fun currentQuotaPeriodKey(): String {
+        val calendar = java.util.Calendar.getInstance()
+        val year = calendar.get(java.util.Calendar.YEAR)
+        val day = calendar.get(java.util.Calendar.DAY_OF_YEAR)
+        val periodStartHour = (calendar.get(java.util.Calendar.HOUR_OF_DAY) / 6) * 6
+        return "$year-$day-$periodStartHour"
+    }
+
+    private fun refreshQuota() {
+        val key = currentQuotaPeriodKey()
+        val storedKey = quotaPrefs.getString("period_key", null)
+        var used = quotaPrefs.getInt("used", 0)
+        if (storedKey != key) {
+            used = 0
+            quotaPrefs.edit().putString("period_key", key).putInt("used", 0).apply()
+        }
+        _state.update {
+            it.copy(
+                requestsUsed = used.coerceIn(0, REQUEST_LIMIT),
+                requestsRemaining = (REQUEST_LIMIT - used).coerceIn(0, REQUEST_LIMIT),
+                limitReached = used >= REQUEST_LIMIT
+            )
+        }
+    }
+
+    private fun consumeRequest(): Boolean {
+        refreshQuota()
+        val used = quotaPrefs.getInt("used", 0)
+        if (used >= REQUEST_LIMIT) return false
+        val next = used + 1
+        quotaPrefs.edit().putString("period_key", currentQuotaPeriodKey()).putInt("used", next).commit()
+        _state.update {
+            it.copy(
+                requestsUsed = next,
+                requestsRemaining = REQUEST_LIMIT - next,
+                limitReached = next >= REQUEST_LIMIT
+            )
+        }
+        return true
     }
 
     private fun updateLastAssistant(text: String) {
