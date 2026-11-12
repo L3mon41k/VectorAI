@@ -70,6 +70,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import java.time.LocalTime
 
 private val Black = Color(0xFF000000)
@@ -107,6 +108,10 @@ private fun VectorAIApp() {
     val messages by chatViewModel.messages.collectAsState()
     LaunchedEffect(Unit) {
         chatViewModel.prepare()
+        while (true) {
+            delay(30_000)
+            chatViewModel.refreshQuotaState()
+        }
     }
 
     BackHandler(enabled = currentPage != "chat") {
@@ -386,6 +391,15 @@ private fun ChatScreen(
             }
         }
 
+        if (chatState.modelReady) {
+            Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                Text("Запросы: ${chatState.requestsUsed}/150 · осталось ${chatState.requestsRemaining}", color = Muted, fontSize = 11.sp)
+                if (chatState.limitReached) {
+                    Text("Достигнут лимит запросов, попробуйте позже", color = Color(0xFFFF7777), fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 14.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -393,14 +407,14 @@ private fun ChatScreen(
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
-                enabled = chatState.modelReady && !chatState.isBusy,
+                enabled = chatState.modelReady && !chatState.isBusy && !chatState.limitReached,
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Сообщение VectorAI...", color = Muted, fontSize = 14.sp) },
                 shape = RoundedCornerShape(18.dp),
                 maxLines = 4,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = {
-                    if (draft.isNotBlank() && chatState.modelReady && !chatState.isBusy) {
+                    if (draft.isNotBlank() && chatState.modelReady && !chatState.isBusy && !chatState.limitReached) {
                         onSendMessage(draft.trim())
                         draft = ""
                     }
