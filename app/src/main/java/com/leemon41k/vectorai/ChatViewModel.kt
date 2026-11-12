@@ -279,6 +279,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return "$year-$day-$periodStartHour"
     }
 
+    fun refreshQuotaState() = refreshQuota()
+
     private fun refreshQuota() {
         val key = currentQuotaPeriodKey()
         val storedKey = quotaPrefs.getString("period_key", null)
