@@ -250,7 +250,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val activeConversation = conversation ?: throw IllegalStateException("Локальная модель ещё не готова.")
                 val knowledge = LocalKnowledgeBase.findRelevant(cleaned)
                 val modelInput = if (knowledge.isBlank()) cleaned else
-                    "Дополнительные сведения из локальной базы VectorAI. Используй их, если они относятся к вопросу; не выдумывай недостающие факты.\\n$knowledge\\n\\nВопрос пользователя: $cleaned"
+                    "Дополнительные сведения из локальной базы VectorAI. Используй их, если они относятся к вопросу; не выдумывай недостающие факты.\n$knowledge\n\nВопрос пользователя: $cleaned"
                 activeConversation.sendMessageAsync(
                     modelInput,
                     extraContext = mapOf("enable_thinking" to false)
