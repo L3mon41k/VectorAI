@@ -5,6 +5,11 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# Keep only the newest build for this branch; cancel older queued/running runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
