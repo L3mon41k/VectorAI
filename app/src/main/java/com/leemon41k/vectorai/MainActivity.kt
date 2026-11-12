@@ -425,7 +425,7 @@ private fun ChatScreen(
             Box(
                 modifier = Modifier.size(50.dp).clip(CircleShape).background(Red)
                     .clickable {
-                        if (draft.isNotBlank() && chatState.modelReady && !chatState.isBusy) {
+                        if (draft.isNotBlank() && chatState.modelReady && !chatState.isBusy && !chatState.limitReached) {
                             onSendMessage(draft.trim())
                             draft = ""
                         }
