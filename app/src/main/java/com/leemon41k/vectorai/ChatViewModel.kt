@@ -16,7 +16,6 @@ import java.net.URL
 import java.security.MessageDigest
 import java.io.IOException
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -69,7 +68,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val executor = Executors.newSingleThreadExecutor()
     private val scope = CoroutineScope(SupervisorJob() + executor.asCoroutineDispatcher())
     private val mutex = Mutex()
-    private val downloadRequestActive = AtomicBoolean(false)
     private val modelFile = File(application.filesDir, MODEL_FILE_NAME)
     private val partialFile = File(application.filesDir, PART_FILE_NAME)
     private val quotaPrefs = application.getSharedPreferences(QUOTA_PREFS, android.content.Context.MODE_PRIVATE)
@@ -102,194 +100,165 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startDownload() {
-        // Ignore rapid repeated taps instead of queuing another full download.
-        if (!downloadRequestActive.compareAndSet(false, true)) return
-
         scope.launch {
-            try {
-                mutex.withLock {
-                    if (_state.value.isDownloading || _state.value.isLoading || _state.value.modelReady) return@withLock
-                    try {
-                        val existingBytes = partialFile.length().coerceAtMost(EXPECTED_MODEL_SIZE)
-                        _state.update {
-                            it.copy(
-                                isDownloading = true,
-                                isLoading = false,
-                                modelExists = false,
-                                downloadedBytes = existingBytes,
-                                totalBytes = EXPECTED_MODEL_SIZE,
-                                downloadProgress = (existingBytes.toFloat() / EXPECTED_MODEL_SIZE).coerceIn(0f, 1f),
-                                downloadSpeed = 0L,
-                                remainingSeconds = -1L,
-                                error = null
-                            )
-                        }
-                        downloadModel()
-                        val hash = withContext(Dispatchers.IO) { sha256(partialFile) }
-                        if (hash != EXPECTED_MODEL_SHA256) {
-                            partialFile.delete()
-                            throw IOException("Проверка SHA-256 не пройдена. Частичный файл удалён — скачай модель заново.")
-                        }
-                        if (modelFile.exists() && !modelFile.delete()) throw IOException("Не удалось заменить файл модели.")
-                        if (!partialFile.renameTo(modelFile)) throw IOException("Не удалось сохранить файл модели.")
-                        _state.update { it.copy(isDownloading = false, modelExists = true, isLoading = true) }
-                        loadModelLocked()
-                        if (_state.value.modelReady) {
-                            File(getApplication<Application>().filesDir, "vectorai-gemma3-1b-it-int4.litertlm").delete()
-                        }
-                    } catch (error: Exception) {
-                        _state.update {
-                            it.copy(
-                                isDownloading = false,
-                                isLoading = false,
-                                modelReady = false,
-                                modelExists = modelFile.isFile,
-                                downloadedBytes = partialFile.length().coerceAtMost(EXPECTED_MODEL_SIZE),
-                                downloadProgress = (partialFile.length().toFloat() / EXPECTED_MODEL_SIZE).coerceIn(0f, 1f),
-                                error = error.localizedMessage ?: "Не удалось загрузить модель. Незавершённая загрузка сохранена."
-                            )
-                        }
-                    }
+            mutex.withLock {
+                if (_state.value.isDownloading || _state.value.isLoading || _state.value.modelReady) return@withLock
+                try {
+                    _state.update { it.copy(isDownloading = true, isLoading = false, modelExists = false, downloadedBytes = partialFile.length().coerceAtMost(EXPECTED_MODEL_SIZE), totalBytes = EXPECTED_MODEL_SIZE, downloadProgress = (partialFile.length().toFloat() / EXPECTED_MODEL_SIZE).coerceIn(0f, 1f), downloadSpeed = 0L, remainingSeconds = -1L, error = null) }
+                    downloadModel()
+                    val hash = withContext(Dispatchers.IO) { sha256(partialFile) }
+                    if (hash != EXPECTED_MODEL_SHA256) { partialFile.delete(); throw IOException("Проверка SHA-256 не пройдена. Загрузи файл ещё раз.") }
+                    if (modelFile.exists() && !modelFile.delete()) throw IOException("Не удалось заменить файл модели.")
+                    if (!partialFile.renameTo(modelFile)) throw IOException("Не удалось сохранить файл модели.")
+                    _state.update { it.copy(isDownloading = false, modelExists = true, isLoading = true) }
+                    loadModelLocked()
+                    if (_state.value.modelReady) File(getApplication<Application>().filesDir, "vectorai-gemma3-1b-it-int4.litertlm").delete()
+                } catch (error: Exception) {
+                    _state.update { it.copy(isDownloading = false, isLoading = false, modelReady = false, modelExists = modelFile.isFile, error = error.localizedMessage ?: "Не удалось загрузить модель. Незавершённая загрузка сохранена.") }
                 }
-            } finally {
-                downloadRequestActive.set(false)
             }
         }
     }
 
     private suspend fun downloadModel() = withContext(Dispatchers.IO) {
-        val offset = partialFile.length()
+        // Use bounded byte ranges instead of one open-ended request. This is
+        // more reliable with large files served through Hugging Face's CDN.
+        val chunkSize = 8L * 1024L * 1024L
+        var offset = partialFile.length()
 
         if (offset > EXPECTED_MODEL_SIZE) {
-            throw IOException("Размер временного файла превышает ожидаемый. Удали повреждённую загрузку и скачай модель заново.")
+            throw IOException("Размер временного файла больше ожидаемого. Файл сохранён; автоматическое удаление запрещено.")
         }
         if (offset == EXPECTED_MODEL_SIZE) return@withContext
 
-        val connection = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
-            instanceFollowRedirects = true
-            connectTimeout = 30_000
-            readTimeout = 60_000
-            setRequestProperty("User-Agent", "VectorAI-Android")
-            setRequestProperty("Accept-Encoding", "identity")
-            if (offset > 0L) setRequestProperty("Range", "bytes=$offset-")
-        }
-
-        try {
-            connection.connect()
-            val status = connection.responseCode
-
-            // Never discard a partial file automatically on 416. It may contain
-            // valuable downloaded data; surface the mismatch for diagnosis instead.
-            if (status == 416) {
-                val serverRange = connection.getHeaderField("Content-Range")
-                throw IOException(
-                    "Сервер отклонил докачку (HTTP 416). Локально сохранено ${offset / 1_000_000} МБ. " +
-                        (serverRange?.let { "Ответ сервера: $it." } ?: "Временный файл сохранён.")
-                )
+        while (offset < EXPECTED_MODEL_SIZE) {
+            val requestedEnd = minOf(offset + chunkSize - 1L, EXPECTED_MODEL_SIZE - 1L)
+            val connection = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = true
+                connectTimeout = 30_000
+                readTimeout = 90_000
+                setRequestProperty("User-Agent", "VectorAI-Android")
+                setRequestProperty("Accept-Encoding", "identity")
+                setRequestProperty("Cache-Control", "no-cache")
+                setRequestProperty("Pragma", "no-cache")
+                setRequestProperty("Range", "bytes=$offset-$requestedEnd")
             }
 
-            val append = offset > 0L && status == HttpURLConnection.HTTP_PARTIAL
+            try {
+                connection.connect()
+                val status = connection.responseCode
 
-            if (offset == 0L && status != HttpURLConnection.HTTP_OK) {
-                throw IOException("Ошибка сервера: HTTP $status.")
-            }
-            if (offset > 0L && status == HttpURLConnection.HTTP_OK) {
-                // The server ignored Range. Do not truncate the .part file or
-                // silently download the whole model again.
-                throw IOException(
-                    "Сервер не поддержал докачку и вернул полный файл (HTTP 200). " +
-                        "Уже загруженные ${offset / 1_000_000} МБ сохранены; повторная загрузка не запущена."
-                )
-            }
-            if (offset > 0L && status != HttpURLConnection.HTTP_PARTIAL) {
-                throw IOException("Сервер вернул HTTP $status вместо подтверждения докачки (HTTP 206). Временный файл сохранён.")
-            }
-            if (status == HttpURLConnection.HTTP_PARTIAL && offset == 0L) {
-                throw IOException("Сервер вернул частичный ответ без запроса диапазона.")
-            }
-
-            if (append) {
-                val contentRange = connection.getHeaderField("Content-Range")
-                    ?: throw IOException("Сервер не подтвердил диапазон докачки (нет Content-Range).")
-                val match = Regex("bytes (\\d+)-(\\d+)/(\\d+)").matchEntire(contentRange.trim())
-                    ?: throw IOException("Некорректный Content-Range: $contentRange")
-                val rangeStart = match.groupValues[1].toLongOrNull()
-                    ?: throw IOException("Некорректное начало Content-Range.")
-                val rangeEnd = match.groupValues[2].toLongOrNull()
-                    ?: throw IOException("Некорректный конец Content-Range.")
-                val remoteTotal = match.groupValues[3].toLongOrNull()
-                    ?: throw IOException("Некорректный общий размер Content-Range.")
-
-                if (rangeStart != offset || rangeEnd < rangeStart ||
-                    rangeEnd != EXPECTED_MODEL_SIZE - 1L || remoteTotal != EXPECTED_MODEL_SIZE
-                ) {
-                    throw IOException(
-                        "Диапазон сервера не совпадает с локальным файлом. " +
-                            "Получено: $contentRange; локальное смещение: $offset. Временный файл сохранён."
-                    )
-                }
-
-                val expectedResponseLength = rangeEnd - rangeStart + 1L
-                val responseLength = connection.contentLengthLong
-                if (responseLength >= 0L && responseLength != expectedResponseLength) {
-                    throw IOException(
-                        "Размер ответа не совпадает с Content-Range: $responseLength вместо $expectedResponseLength байт."
-                    )
-                }
-            }
-
-            val responseLength = connection.contentLengthLong
-            if (responseLength > 0L && offset + responseLength > EXPECTED_MODEL_SIZE) {
-                throw IOException("Сервер передал файл неожиданного размера.")
-            }
-
-            FileOutputStream(partialFile, append).use { output ->
-                connection.inputStream.use { input ->
-                    val buffer = ByteArray(262144)
-                    var countTotal = offset
-                    var lastTime = System.nanoTime()
-                    var lastCount = countTotal
-
-                    while (true) {
-                        val n = input.read(buffer)
-                        if (n < 0) break
-                        output.write(buffer, 0, n)
-                        countTotal += n
-
-                        if (countTotal > EXPECTED_MODEL_SIZE) {
-                            throw IOException("Получен файл неожиданного размера. Временный файл сохранён для проверки.")
-                        }
-
-                        val now = System.nanoTime()
-                        if (now - lastTime >= 500_000_000L) {
-                            val seconds = (now - lastTime) / 1_000_000_000.0
-                            val speed = ((countTotal - lastCount) / seconds).toLong().coerceAtLeast(0L)
-                            val eta = if (speed > 0L) (EXPECTED_MODEL_SIZE - countTotal) / speed else -1L
-                            _state.update {
-                                it.copy(
-                                    downloadedBytes = countTotal,
-                                    totalBytes = EXPECTED_MODEL_SIZE,
-                                    downloadProgress = (countTotal.toFloat() / EXPECTED_MODEL_SIZE).coerceIn(0f, 1f),
-                                    downloadSpeed = speed,
-                                    remainingSeconds = eta
-                                )
-                            }
-                            lastTime = now
-                            lastCount = countTotal
-                        }
+                if (status == 416) {
+                    val serverRange = connection.getHeaderField("Content-Range")
+                    val remoteTotal = Regex("bytes \\*/(\\d+)")
+                        .matchEntire(serverRange?.trim().orEmpty())
+                        ?.groupValues?.get(1)?.toLongOrNull()
+                    val detail = if (remoteTotal != null) {
+                        " Сервер сообщает размер ${remoteTotal} байт; локальный файл содержит ${offset} байт."
+                    } else {
+                        " Сервер не сообщил общий размер файла."
                     }
+                    throw IOException(
+                        "Сервер отклонил диапазон докачки (HTTP 416).$detail " +
+                            "Все ${offset} байт временного файла сохранены. Повторная загрузка с нуля не запускалась."
+                    )
+                }
 
-                    output.fd.sync()
-                    if (countTotal != EXPECTED_MODEL_SIZE) {
+                val append: Boolean
+                val responseStart: Long
+                val responseEnd: Long
+                if (status == HttpURLConnection.HTTP_PARTIAL) {
+                    val contentRange = connection.getHeaderField("Content-Range")
+                        ?: throw IOException("Сервер вернул HTTP 206 без Content-Range. Временный файл сохранён.")
+                    val match = Regex("bytes (\\d+)-(\\d+)/(\\d+)").matchEntire(contentRange.trim())
+                        ?: throw IOException("Некорректный Content-Range: $contentRange")
+                    responseStart = match.groupValues[1].toLong()
+                    responseEnd = match.groupValues[2].toLong()
+                    val remoteTotal = match.groupValues[3].toLong()
+                    if (responseStart != offset || responseEnd < responseStart ||
+                        responseEnd > requestedEnd || remoteTotal != EXPECTED_MODEL_SIZE
+                    ) {
                         throw IOException(
-                            "Загружено ${countTotal / 1_000_000} из ${EXPECTED_MODEL_SIZE / 1_000_000} МБ. " +
-                                "Частичный файл сохранён — нажми «Продолжить загрузку»."
+                            "Сервер вернул несовпадающий диапазон: $contentRange; " +
+                                "запрошено bytes=$offset-$requestedEnd. Временный файл сохранён."
                         )
                     }
+                    append = offset > 0L
+                } else if (status == HttpURLConnection.HTTP_OK && offset == 0L) {
+                    responseStart = 0L
+                    responseEnd = EXPECTED_MODEL_SIZE - 1L
+                    append = false
+                    if (connection.contentLengthLong >= 0L &&
+                        connection.contentLengthLong != EXPECTED_MODEL_SIZE
+                    ) {
+                        throw IOException("Размер файла на сервере не совпадает с ожидаемым.")
+                    }
+                } else if (status == HttpURLConnection.HTTP_OK) {
+                    throw IOException(
+                        "Сервер проигнорировал докачку (HTTP 200). " +
+                            "Уже загруженные ${offset / 1_000_000} МБ сохранены; файл не перезаписан."
+                    )
+                } else {
+                    throw IOException("Ошибка сервера при докачке: HTTP $status. Временный файл сохранён.")
                 }
+
+                val expectedChunkLength = responseEnd - responseStart + 1L
+                val responseLength = connection.contentLengthLong
+                if (responseLength >= 0L && responseLength != expectedChunkLength) {
+                    throw IOException(
+                        "Размер ответа ($responseLength байт) не совпадает с диапазоном " +
+                            "($expectedChunkLength байт). Временный файл сохранён."
+                    )
+                }
+
+                FileOutputStream(partialFile, append).use { output ->
+                    connection.inputStream.use { input ->
+                        val buffer = ByteArray(262144)
+                        var received = 0L
+                        var lastTime = System.nanoTime()
+                        var lastCount = offset
+
+                        while (true) {
+                            val n = input.read(buffer)
+                            if (n < 0) break
+                            output.write(buffer, 0, n)
+                            received += n
+                            val countTotal = offset + received
+                            if (countTotal > EXPECTED_MODEL_SIZE || received > expectedChunkLength) {
+                                throw IOException("Сервер передал больше данных, чем запрошено. Временный файл сохранён.")
+                            }
+
+                            val now = System.nanoTime()
+                            if (now - lastTime >= 500_000_000L) {
+                                val seconds = (now - lastTime) / 1_000_000_000.0
+                                val speed = ((countTotal - lastCount) / seconds).toLong().coerceAtLeast(0L)
+                                val eta = if (speed > 0L) (EXPECTED_MODEL_SIZE - countTotal) / speed else -1L
+                                _state.update {
+                                    it.copy(
+                                        downloadedBytes = countTotal,
+                                        totalBytes = EXPECTED_MODEL_SIZE,
+                                        downloadProgress = (countTotal.toFloat() / EXPECTED_MODEL_SIZE).coerceIn(0f, 1f),
+                                        downloadSpeed = speed,
+                                        remainingSeconds = eta
+                                    )
+                                }
+                                lastTime = now
+                                lastCount = countTotal
+                            }
+                        }
+                        output.fd.sync()
+                        if (received != expectedChunkLength) {
+                            throw IOException(
+                                "Получено $received из $expectedChunkLength байт текущего фрагмента. " +
+                                    "Загруженная часть сохранена — нажми «Продолжить загрузку»."
+                            )
+                        }
+                    }
+                }
+                offset += expectedChunkLength
+            } finally {
+                connection.disconnect()
             }
-        } finally {
-            connection.disconnect()
         }
     }
 
