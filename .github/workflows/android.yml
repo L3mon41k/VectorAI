@@ -2,6 +2,8 @@ name: Build VectorAI APK
 
 on:
   push:
+    branches: [ main, 'fix/**' ]
+  pull_request:
     branches: [ main ]
   workflow_dispatch:
 
