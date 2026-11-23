@@ -228,6 +228,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     if (!validExistingModel) {
                         modelFile.delete()
                         temporaryModelFile.delete()
+                        val filesDir = getApplication<Application>().filesDir
+                        File(filesDir, "vectorai-local-model.litertlm").delete()
+                        File(filesDir, "vectorai-local-model.litertlm.part").delete()
+                        File(filesDir, "vectorai-gemma3-1b-it-int4.litertlm").delete()
                         copyBundledModel()
                     } else {
                         _state.update { it.copy(modelExists = true, setupProgress = 1f) }
