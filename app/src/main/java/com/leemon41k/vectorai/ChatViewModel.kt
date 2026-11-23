@@ -11,8 +11,8 @@ import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.SamplerConfig
 import java.io.File
 import java.io.FileOutputStream
-import java.security.MessageDigest
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
@@ -46,16 +46,10 @@ data class ChatThread(
 data class ChatUiState(
     val modelReady: Boolean = false,
     val modelExists: Boolean = false,
-    val isDownloading: Boolean = false,
     val isLoading: Boolean = false,
     val setupProgress: Float = 0f,
     val setupBytes: Long = 0L,
     val isBusy: Boolean = false,
-    val downloadProgress: Float = 0f,
-    val downloadedBytes: Long = 0L,
-    val totalBytes: Long = 0L,
-    val downloadSpeed: Long = 0L,
-    val remainingSeconds: Long = -1L,
     val error: String? = null,
     val requestsUsed: Int = 0,
     val requestsRemaining: Int = 150,
@@ -227,7 +221,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         scope.launch {
             mutex.withLock {
                 if (_state.value.modelReady || _state.value.isLoading) return@withLock
-                _state.update { it.copy(isLoading = true, isDownloading = false, error = null, setupProgress = 0f, setupBytes = 0L) }
+                _state.update { it.copy(isLoading = true, error = null, setupProgress = 0f, setupBytes = 0L) }
                 try {
                     val validExistingModel = modelFile.isFile &&
                         withContext(Dispatchers.IO) { sha256(modelFile) == EXPECTED_MODEL_SHA256 }
@@ -246,7 +240,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             modelReady = false,
                             modelExists = modelFile.isFile,
                             isLoading = false,
-                            isDownloading = false,
                             error = error.localizedMessage ?: "Не удалось подготовить встроенную модель."
                         )
                     }
@@ -421,10 +414,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     modelReady = true,
                     modelExists = true,
                     isLoading = false,
-                    isDownloading = false,
                     error = null
                 )
             }
+            val filesDir = getApplication<Application>().filesDir
+            File(filesDir, "vectorai-local-model.litertlm").delete()
+            File(filesDir, "vectorai-local-model.litertlm.part").delete()
         } catch (error: Exception) {
             closeResources()
             _state.update {
@@ -432,7 +427,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     modelReady = false,
                     modelExists = modelFile.exists(),
                     isLoading = false,
-                    isDownloading = false,
                     error = error.localizedMessage ?: "Не удалось запустить локальную модель."
                 )
             }
