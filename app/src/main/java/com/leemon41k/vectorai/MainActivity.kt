@@ -106,6 +106,8 @@ private fun VectorAIApp() {
     val chatViewModel: ChatViewModel = viewModel()
     val chatState by chatViewModel.state.collectAsState()
     val messages by chatViewModel.messages.collectAsState()
+    val threads by chatViewModel.threads.collectAsState()
+    val currentThreadId by chatViewModel.currentThreadId.collectAsState()
     LaunchedEffect(Unit) {
         chatViewModel.prepare()
         while (true) {
@@ -137,7 +139,12 @@ private fun VectorAIApp() {
                 currentPage = currentPage,
                 onPageChange = { currentPage = it },
                 messages = messages,
+                threads = threads,
+                currentThreadId = currentThreadId,
                 chatState = chatState,
+                onNewChat = chatViewModel::newChat,
+                onSelectChat = chatViewModel::selectChat,
+                onDeleteChat = chatViewModel::deleteChat,
                 onSendMessage = chatViewModel::send,
                 onDownloadModel = chatViewModel::startDownload
             )
@@ -188,7 +195,12 @@ private fun MainNavigation(
     currentPage: String,
     onPageChange: (String) -> Unit,
     messages: List<ChatMessage>,
+    threads: List<ChatThread>,
+    currentThreadId: String,
     chatState: ChatUiState,
+    onNewChat: () -> Unit,
+    onSelectChat: (String) -> Unit,
+    onDeleteChat: (String) -> Unit,
     onSendMessage: (String) -> Unit,
     onDownloadModel: () -> Unit
 ) {
@@ -214,21 +226,38 @@ private fun MainNavigation(
                     Spacer(Modifier.height(28.dp))
                     Text("ИСТОРИЯ ЧАТОВ", color = Muted, fontSize = 11.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(12.dp))
-                    DrawerEntry("Новый чат", selected = currentPage == "chat") {
+                    DrawerEntry("＋  Новый чат", selected = false) {
+                        onNewChat()
                         onPageChange("chat")
                         scope.launch { drawerState.close() }
                     }
-                    Text(
-                        if (messages.isEmpty()) "История пока пуста" else "Текущий диалог",
-                        color = Muted,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(start = 14.dp, top = 8.dp)
-                    )
+                    Spacer(Modifier.height(6.dp))
+                    if (threads.isEmpty()) {
+                        Text("История пока пуста", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(start = 14.dp, top = 8.dp))
+                    } else {
+                        threads.forEach { thread ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.weight(1f)) {
+                                    DrawerEntry(thread.title, selected = thread.id == currentThreadId && currentPage == "chat") {
+                                        onSelectChat(thread.id)
+                                        onPageChange("chat")
+                                        scope.launch { drawerState.close() }
+                                    }
+                                }
+                                TextButton(
+                                    onClick = { onDeleteChat(thread.id) },
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text("×", color = Muted, fontSize = 20.sp)
+                                }
+                            }
+                        }
+                    }
                     Spacer(Modifier.weight(1f))
                     Divider(color = Color.White.copy(alpha = 0.12f))
                     Spacer(Modifier.height(14.dp))
                     Text(
-                        "Версия приложения 0.2.0",
+                        "Версия приложения 0.3.0",
                         color = Color(0xFF777777),
                         fontSize = 12.sp,
                         modifier = Modifier.padding(vertical = 8.dp, horizontal = 2.dp)
@@ -243,6 +272,7 @@ private fun MainNavigation(
                 userName = userName,
                 onMenu = { scope.launch { drawerState.open() } },
                 messages = messages,
+                chatId = currentThreadId,
                 chatState = chatState,
                 onSendMessage = onSendMessage,
                 onDownloadModel = onDownloadModel
@@ -270,11 +300,12 @@ private fun ChatScreen(
     userName: String,
     onMenu: () -> Unit,
     messages: List<ChatMessage>,
+    chatId: String,
     chatState: ChatUiState,
     onSendMessage: (String) -> Unit,
     onDownloadModel: () -> Unit
 ) {
-    var draft by rememberSaveable { mutableStateOf("") }
+    var draft by rememberSaveable(chatId) { mutableStateOf("") }
     val greeting = greetingForCurrentTime()
 
     Column(
