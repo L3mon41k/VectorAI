@@ -108,7 +108,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun newChat() {
         scope.launch {
-            if (_state.value.isBusy || (_messages.value.isEmpty().not() && _messages.value.none { it.isUser })) return@launch
+            if (_state.value.isBusy || _messages.value.isNotEmpty()) return@launch
             val thread = ChatThread(UUID.randomUUID().toString(), "Новый чат", emptyList(), System.currentTimeMillis())
             _threads.update { listOf(thread) + it }
             _currentThreadId.value = thread.id
