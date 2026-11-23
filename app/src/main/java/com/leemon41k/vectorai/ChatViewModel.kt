@@ -264,10 +264,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun downloadModel() = withContext(Dispatchers.IO) {
-        downloadModelAttempt(retryAfter416 = true)
+        downloadModelAttempt()
     }
 
-    private suspend fun downloadModelAttempt(retryAfter416: Boolean) {
+    private suspend fun downloadModelAttempt() {
         var offset = partialFile.length()
         if (offset > EXPECTED_MODEL_SIZE) {
             partialFile.delete()
@@ -275,23 +275,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (offset == EXPECTED_MODEL_SIZE) return
 
-        val connection = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
-            instanceFollowRedirects = true
-            connectTimeout = 30_000
-            readTimeout = 60_000
-            setRequestProperty("User-Agent", "VectorAI-Android")
-            setRequestProperty("Accept-Encoding", "identity")
-            if (offset > 0L) setRequestProperty("Range", "bytes=$offset-")
-        }
+        val connection = openModelConnection(offset)
 
         try {
-            connection.connect()
             val status = connection.responseCode
 
-            if (status == 416 && retryAfter416) {
-                connection.disconnect()
-                partialFile.delete()
-                return downloadModelAttempt(retryAfter416 = false)
+            if (status == 416) {
+                val rangeInfo = connection.getHeaderField("Content-Range")
+                throw IOException(
+                    "Сервер отклонил докачку (HTTP 416, $rangeInfo). " +
+                        "Частичный файл сохранён; повторная загрузка с нуля не запускается."
+                )
             }
 
             val append = offset > 0L && status == HttpURLConnection.HTTP_PARTIAL
@@ -308,13 +302,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val rangeEnd = match.groupValues[2].toLong()
                 val remoteTotal = match.groupValues[3].toLong()
                 if (rangeStart != offset || rangeEnd < rangeStart || remoteTotal != EXPECTED_MODEL_SIZE) {
-                    connection.disconnect()
-                    partialFile.delete()
-                    if (retryAfter416) return downloadModelAttempt(retryAfter416 = false)
-                    throw IOException("Диапазон загрузки не совпадает с локальным файлом.")
+                    throw IOException(
+                        "Сервер вернул несовпадающий диапазон ($contentRange). " +
+                            "Частичный файл сохранён, чтобы не начинать загрузку заново."
+                    )
                 }
             } else if (offset > 0L && status == HttpURLConnection.HTTP_OK) {
-                offset = 0L
+                throw IOException(
+                    "Сервер проигнорировал запрос докачки и вернул HTTP 200. " +
+                        "Частичный файл сохранён; перезапись с нуля отменена."
+                )
             }
 
             val responseLength = connection.contentLengthLong
@@ -363,6 +360,53 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         } finally {
             connection.disconnect()
         }
+    }
+
+
+    /**
+     * Follows Hugging Face/CDN redirects manually so the Range header is
+     * explicitly copied to every HTTPS destination. HttpURLConnection's
+     * automatic redirect handling may drop Range on cross-host redirects.
+     */
+    private fun openModelConnection(offset: Long): HttpURLConnection {
+        var currentUrl = URL(MODEL_URL)
+        repeat(8) { redirectCount ->
+            val connection = (currentUrl.openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                connectTimeout = 30_000
+                readTimeout = 60_000
+                requestMethod = "GET"
+                setRequestProperty("User-Agent", "VectorAI-Android")
+                setRequestProperty("Accept-Encoding", "identity")
+                if (offset > 0L) setRequestProperty("Range", "bytes=$offset-")
+            }
+
+            connection.connect()
+            val status = connection.responseCode
+            val isRedirect = status == HttpURLConnection.HTTP_MOVED_PERM ||
+                status == HttpURLConnection.HTTP_MOVED_TEMP ||
+                status == HttpURLConnection.HTTP_SEE_OTHER ||
+                status == 307 || status == 308
+
+            if (!isRedirect) return connection
+
+            val location = connection.getHeaderField("Location")
+            connection.disconnect()
+            if (location.isNullOrBlank()) {
+                throw IOException("Сервер перенаправил загрузку без адреса назначения.")
+            }
+
+            val nextUrl = URL(currentUrl, location)
+            if (!nextUrl.protocol.equals("https", ignoreCase = true)) {
+                throw IOException("Сервер вернул небезопасное перенаправление загрузки.")
+            }
+            currentUrl = nextUrl
+
+            if (redirectCount == 7) {
+                throw IOException("Слишком много перенаправлений при загрузке модели.")
+            }
+        }
+        throw IOException("Не удалось открыть адрес загрузки модели.")
     }
 
     private fun sha256(file: File): String {
