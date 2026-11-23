@@ -14,6 +14,7 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.UUID
 import java.io.IOException
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
@@ -35,6 +36,13 @@ import kotlinx.coroutines.withContext
 data class ChatMessage(
     val isUser: Boolean,
     val text: String
+)
+
+data class ChatThread(
+    val id: String,
+    val title: String,
+    val messages: List<ChatMessage>,
+    val updatedAt: Long
 )
 
 data class ChatUiState(
@@ -71,6 +79,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val modelFile = File(application.filesDir, MODEL_FILE_NAME)
     private val partialFile = File(application.filesDir, PART_FILE_NAME)
     private val quotaPrefs = application.getSharedPreferences(QUOTA_PREFS, android.content.Context.MODE_PRIVATE)
+    private val chatPrefs = application.getSharedPreferences("vectorai_chats", android.content.Context.MODE_PRIVATE)
+    private val initialThreads = loadThreadsFromDisk()
 
     private var engine: Engine? = null
     private var conversation: Conversation? = null
@@ -78,8 +88,141 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
-    private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    private val _threads = MutableStateFlow(initialThreads)
+    val threads: StateFlow<List<ChatThread>> = _threads.asStateFlow()
+
+    private val _currentThreadId = MutableStateFlow(initialThreads.firstOrNull()?.id.orEmpty())
+    val currentThreadId: StateFlow<String> = _currentThreadId.asStateFlow()
+
+    private val _messages = MutableStateFlow(initialThreads.firstOrNull()?.messages ?: emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+
+    init {
+        if (initialThreads.isEmpty()) {
+            val first = ChatThread(UUID.randomUUID().toString(), "Новый чат", emptyList(), System.currentTimeMillis())
+            _threads.value = listOf(first)
+            _currentThreadId.value = first.id
+            persistThreads()
+        }
+    }
+
+    fun newChat() {
+        scope.launch {
+            if (_state.value.isBusy || (_messages.value.isEmpty().not() && _messages.value.none { it.isUser })) return@launch
+            val thread = ChatThread(UUID.randomUUID().toString(), "Новый чат", emptyList(), System.currentTimeMillis())
+            _threads.update { listOf(thread) + it }
+            _currentThreadId.value = thread.id
+            _messages.value = emptyList()
+            resetConversation()
+            persistThreads()
+        }
+    }
+
+    fun selectChat(id: String) {
+        scope.launch {
+            if (_state.value.isBusy) return@launch
+            val thread = _threads.value.firstOrNull { it.id == id } ?: return@launch
+            _currentThreadId.value = thread.id
+            _messages.value = thread.messages
+            resetConversation()
+        }
+    }
+
+    fun deleteChat(id: String) {
+        scope.launch {
+            if (_state.value.isBusy) return@launch
+            val remaining = _threads.value.filterNot { it.id == id }
+            _threads.value = remaining
+            if (_currentThreadId.value == id) {
+                val next = remaining.firstOrNull()
+                if (next == null) {
+                    val replacement = ChatThread(UUID.randomUUID().toString(), "Новый чат", emptyList(), System.currentTimeMillis())
+                    _threads.value = listOf(replacement)
+                    _currentThreadId.value = replacement.id
+                    _messages.value = emptyList()
+                } else {
+                    _currentThreadId.value = next.id
+                    _messages.value = next.messages
+                }
+                resetConversation()
+            }
+            persistThreads()
+        }
+    }
+
+    private fun resetConversation() {
+        try { conversation?.close() } catch (_: Exception) { }
+        conversation = try {
+            engine?.createConversation(
+                ConversationConfig(
+                    systemInstruction = Contents.of(VECTORAI_SYSTEM_PROMPT),
+                    samplerConfig = SamplerConfig(topK = 20, topP = 0.8, temperature = 0.7)
+                )
+            )
+        } catch (_: Exception) { null }
+    }
+
+    private fun updateMessages(transform: (List<ChatMessage>) -> List<ChatMessage>) {
+        _messages.update { transform(it) }
+        val id = _currentThreadId.value
+        val updatedMessages = _messages.value
+        val firstPrompt = updatedMessages.firstOrNull { it.isUser }?.text
+        val title = firstPrompt?.replace(Regex("\\s+"), " ")?.take(34) ?: "Новый чат"
+        _threads.update { list ->
+            list.map { thread ->
+                if (thread.id == id) thread.copy(
+                    title = title,
+                    messages = updatedMessages,
+                    updatedAt = System.currentTimeMillis()
+                ) else thread
+            }.sortedByDescending { it.updatedAt }
+        }
+        persistThreads()
+    }
+
+    private fun persistThreads() {
+        val array = org.json.JSONArray()
+        _threads.value.forEach { thread ->
+            val item = org.json.JSONObject()
+                .put("id", thread.id)
+                .put("title", thread.title)
+                .put("updatedAt", thread.updatedAt)
+            val messagesArray = org.json.JSONArray()
+            thread.messages.forEach { message ->
+                messagesArray.put(org.json.JSONObject().put("isUser", message.isUser).put("text", message.text))
+            }
+            item.put("messages", messagesArray)
+            array.put(item)
+        }
+        chatPrefs.edit().putString("threads", array.toString()).apply()
+    }
+
+    private fun loadThreadsFromDisk(): List<ChatThread> {
+        return try {
+            val raw = chatPrefs.getString("threads", null) ?: return emptyList()
+            val array = org.json.JSONArray(raw)
+            buildList {
+                for (i in 0 until array.length()) {
+                    val item = array.getJSONObject(i)
+                    val messagesArray = item.optJSONArray("messages") ?: org.json.JSONArray()
+                    val savedMessages = buildList {
+                        for (j in 0 until messagesArray.length()) {
+                            val message = messagesArray.getJSONObject(j)
+                            add(ChatMessage(message.optBoolean("isUser"), message.optString("text")))
+                        }
+                    }
+                    add(ChatThread(
+                        id = item.optString("id"),
+                        title = item.optString("title", "Новый чат"),
+                        messages = savedMessages,
+                        updatedAt = item.optLong("updatedAt", 0L)
+                    ))
+                }
+            }.filter { it.id.isNotBlank() }.sortedByDescending { it.updatedAt }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
 
     fun prepare() {
         refreshQuota()
@@ -238,11 +381,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         scope.launch {
             if (!_state.value.modelReady || _state.value.isBusy) return@launch
             if (!consumeRequest()) {
-                _messages.update { it + ChatMessage(isUser = false, text = "Достигнут лимит запросов, попробуйте позже") }
+                updateMessages { it + ChatMessage(isUser = false, text = "Достигнут лимит запросов, попробуйте позже") }
                 return@launch
             }
 
-            _messages.update { it + ChatMessage(isUser = true, text = cleaned) + ChatMessage(isUser = false, text = "") }
+            updateMessages { it + ChatMessage(isUser = true, text = cleaned) + ChatMessage(isUser = false, text = "") }
             _state.update { it.copy(isBusy = true, error = null) }
 
             val answer = StringBuilder()
@@ -315,7 +458,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun updateLastAssistant(text: String) {
-        _messages.update { current ->
+        updateMessages { current ->
             if (current.isNotEmpty() && !current.last().isUser) {
                 current.dropLast(1) + current.last().copy(text = text)
             } else {
