@@ -11,11 +11,9 @@ import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.SamplerConfig
 import java.io.File
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
-import java.util.UUID
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +48,8 @@ data class ChatUiState(
     val modelExists: Boolean = false,
     val isDownloading: Boolean = false,
     val isLoading: Boolean = false,
+    val setupProgress: Float = 0f,
+    val setupBytes: Long = 0L,
     val isBusy: Boolean = false,
     val downloadProgress: Float = 0f,
     val downloadedBytes: Long = 0L,
@@ -64,11 +64,9 @@ data class ChatUiState(
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
-        private const val MODEL_FILE_NAME = "vectorai-local-model.litertlm"
-        private const val PART_FILE_NAME = "$MODEL_FILE_NAME.part"
-        private const val EXPECTED_MODEL_SIZE = 1_597_931_520L
-        private const val EXPECTED_MODEL_SHA256 = "c4a9b7289365ab80fe599b844b77ad253eb3c53fb0e5d963d699146a6f01255e"
-        private const val MODEL_URL = "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm"
+        private const val MODEL_FILE_NAME = "vectorai-qwen3-0.6b-int4.litertlm"
+        private const val MODEL_ASSET_NAME = "vectorai-qwen3-0.6b-int4.litertlm"
+        private const val EXPECTED_MODEL_SHA256 = "2df6821ec12702dafd33915e7a1a1adc7c4b053f3672fd9555dfaf3a114c4139"
         private const val REQUEST_LIMIT = 150
         private const val QUOTA_PREFS = "vectorai_request_quota"
     }
@@ -77,7 +75,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val scope = CoroutineScope(SupervisorJob() + executor.asCoroutineDispatcher())
     private val mutex = Mutex()
     private val modelFile = File(application.filesDir, MODEL_FILE_NAME)
-    private val partialFile = File(application.filesDir, PART_FILE_NAME)
+    private val temporaryModelFile = File(application.filesDir, "$MODEL_FILE_NAME.tmp")
     private val quotaPrefs = application.getSharedPreferences(QUOTA_PREFS, android.content.Context.MODE_PRIVATE)
     private val chatPrefs = application.getSharedPreferences("vectorai_chats", android.content.Context.MODE_PRIVATE)
     private val initialThreads = loadThreadsFromDisk()
@@ -228,185 +226,73 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         refreshQuota()
         scope.launch {
             mutex.withLock {
-                if (_state.value.modelReady || _state.value.isLoading || _state.value.isDownloading) {
-                    return@withLock
-                }
-                if (modelFile.isFile && modelFile.length() == EXPECTED_MODEL_SIZE && withContext(Dispatchers.IO) { sha256(modelFile) == EXPECTED_MODEL_SHA256 }) {
-                    _state.update { it.copy(modelExists = true, error = null) }
-                    loadModelLocked()
-                } else {
-                    modelFile.delete()
-                    _state.value = ChatUiState()
-                }
-            }
-        }
-    }
-
-    fun startDownload() {
-        scope.launch {
-            mutex.withLock {
-                if (_state.value.isDownloading || _state.value.isLoading || _state.value.modelReady) return@withLock
+                if (_state.value.modelReady || _state.value.isLoading) return@withLock
+                _state.update { it.copy(isLoading = true, isDownloading = false, error = null, setupProgress = 0f, setupBytes = 0L) }
                 try {
-                    _state.update { it.copy(isDownloading = true, isLoading = false, modelExists = false, downloadedBytes = partialFile.length().coerceAtMost(EXPECTED_MODEL_SIZE), totalBytes = EXPECTED_MODEL_SIZE, downloadProgress = (partialFile.length().toFloat() / EXPECTED_MODEL_SIZE).coerceIn(0f, 1f), downloadSpeed = 0L, remainingSeconds = -1L, error = null) }
-                    downloadModel()
-                    val hash = withContext(Dispatchers.IO) { sha256(partialFile) }
-                    if (hash != EXPECTED_MODEL_SHA256) { partialFile.delete(); throw IOException("Проверка SHA-256 не пройдена. Загрузи файл ещё раз.") }
-                    if (modelFile.exists() && !modelFile.delete()) throw IOException("Не удалось заменить файл модели.")
-                    if (!partialFile.renameTo(modelFile)) throw IOException("Не удалось сохранить файл модели.")
-                    _state.update { it.copy(isDownloading = false, modelExists = true, isLoading = true) }
+                    val validExistingModel = modelFile.isFile &&
+                        withContext(Dispatchers.IO) { sha256(modelFile) == EXPECTED_MODEL_SHA256 }
+                    if (!validExistingModel) {
+                        modelFile.delete()
+                        temporaryModelFile.delete()
+                        copyBundledModel()
+                    } else {
+                        _state.update { it.copy(modelExists = true, setupProgress = 1f) }
+                    }
                     loadModelLocked()
-                    if (_state.value.modelReady) File(getApplication<Application>().filesDir, "vectorai-gemma3-1b-it-int4.litertlm").delete()
                 } catch (error: Exception) {
-                    _state.update { it.copy(isDownloading = false, isLoading = false, modelReady = false, modelExists = modelFile.isFile, error = error.localizedMessage ?: "Не удалось загрузить модель. Незавершённая загрузка сохранена.") }
-                }
-            }
-        }
-    }
-
-    private suspend fun downloadModel() = withContext(Dispatchers.IO) {
-        downloadModelAttempt()
-    }
-
-    private suspend fun downloadModelAttempt() {
-        var offset = partialFile.length()
-        if (offset > EXPECTED_MODEL_SIZE) {
-            partialFile.delete()
-            offset = 0L
-        }
-        if (offset == EXPECTED_MODEL_SIZE) return
-
-        val connection = openModelConnection(offset)
-
-        try {
-            val status = connection.responseCode
-
-            if (status == 416) {
-                val rangeInfo = connection.getHeaderField("Content-Range")
-                throw IOException(
-                    "Сервер отклонил докачку (HTTP 416, $rangeInfo). " +
-                        "Частичный файл сохранён; повторная загрузка с нуля не запускается."
-                )
-            }
-
-            val append = offset > 0L && status == HttpURLConnection.HTTP_PARTIAL
-            if (status != HttpURLConnection.HTTP_OK && !append) {
-                throw IOException("Ошибка сервера: HTTP $status.")
-            }
-
-            if (append) {
-                val contentRange = connection.getHeaderField("Content-Range")
-                    ?: throw IOException("Сервер не подтвердил диапазон докачки.")
-                val match = Regex("bytes (\\d+)-(\\d+)/(\\d+)").matchEntire(contentRange.trim())
-                    ?: throw IOException("Некорректный Content-Range от сервера.")
-                val rangeStart = match.groupValues[1].toLong()
-                val rangeEnd = match.groupValues[2].toLong()
-                val remoteTotal = match.groupValues[3].toLong()
-                if (rangeStart != offset || rangeEnd < rangeStart || remoteTotal != EXPECTED_MODEL_SIZE) {
-                    throw IOException(
-                        "Сервер вернул несовпадающий диапазон ($contentRange). " +
-                            "Частичный файл сохранён, чтобы не начинать загрузку заново."
-                    )
-                }
-            } else if (offset > 0L && status == HttpURLConnection.HTTP_OK) {
-                throw IOException(
-                    "Сервер проигнорировал запрос докачки и вернул HTTP 200. " +
-                        "Частичный файл сохранён; перезапись с нуля отменена."
-                )
-            }
-
-            val responseLength = connection.contentLengthLong
-            if (responseLength > 0L && offset + responseLength > EXPECTED_MODEL_SIZE) {
-                throw IOException("Сервер передал файл неожиданного размера.")
-            }
-
-            FileOutputStream(partialFile, append).use { output ->
-                connection.inputStream.use { input ->
-                    val buffer = ByteArray(262144)
-                    var countTotal = offset
-                    var lastTime = System.nanoTime()
-                    var lastCount = countTotal
-                    while (true) {
-                        val n = input.read(buffer)
-                        if (n < 0) break
-                        output.write(buffer, 0, n)
-                        countTotal += n
-                        if (countTotal > EXPECTED_MODEL_SIZE) {
-                            throw IOException("Получен файл неожиданного размера.")
-                        }
-                        val now = System.nanoTime()
-                        if (now - lastTime >= 500_000_000L) {
-                            val seconds = (now - lastTime) / 1_000_000_000.0
-                            val speed = ((countTotal - lastCount) / seconds).toLong().coerceAtLeast(0L)
-                            val eta = if (speed > 0L) (EXPECTED_MODEL_SIZE - countTotal) / speed else -1L
-                            _state.update {
-                                it.copy(
-                                    downloadedBytes = countTotal,
-                                    totalBytes = EXPECTED_MODEL_SIZE,
-                                    downloadProgress = (countTotal.toFloat() / EXPECTED_MODEL_SIZE).coerceIn(0f, 1f),
-                                    downloadSpeed = speed,
-                                    remainingSeconds = eta
-                                )
-                            }
-                            lastTime = now
-                            lastCount = countTotal
-                        }
-                    }
-                    output.fd.sync()
-                    if (countTotal != EXPECTED_MODEL_SIZE) {
-                        throw IOException("Загружено ${countTotal / 1_000_000} из ${EXPECTED_MODEL_SIZE / 1_000_000} МБ. Нажми «Продолжить загрузку».")
+                    temporaryModelFile.delete()
+                    _state.update {
+                        it.copy(
+                            modelReady = false,
+                            modelExists = modelFile.isFile,
+                            isLoading = false,
+                            isDownloading = false,
+                            error = error.localizedMessage ?: "Не удалось подготовить встроенную модель."
+                        )
                     }
                 }
             }
-        } finally {
-            connection.disconnect()
         }
     }
 
+    private suspend fun copyBundledModel() = withContext(Dispatchers.IO) {
+        val context = getApplication<Application>()
+        val totalBytes = context.assets.openFd(MODEL_ASSET_NAME).use { it.length }
+        val digest = MessageDigest.getInstance("SHA-256")
+        var copiedBytes = 0L
 
-    /**
-     * Follows Hugging Face/CDN redirects manually so the Range header is
-     * explicitly copied to every HTTPS destination. HttpURLConnection's
-     * automatic redirect handling may drop Range on cross-host redirects.
-     */
-    private fun openModelConnection(offset: Long): HttpURLConnection {
-        var currentUrl = URL(MODEL_URL)
-        repeat(8) { redirectCount ->
-            val connection = (currentUrl.openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = false
-                connectTimeout = 30_000
-                readTimeout = 60_000
-                requestMethod = "GET"
-                setRequestProperty("User-Agent", "VectorAI-Android")
-                setRequestProperty("Accept-Encoding", "identity")
-                if (offset > 0L) setRequestProperty("Range", "bytes=$offset-")
-            }
-
-            connection.connect()
-            val status = connection.responseCode
-            val isRedirect = status == HttpURLConnection.HTTP_MOVED_PERM ||
-                status == HttpURLConnection.HTTP_MOVED_TEMP ||
-                status == HttpURLConnection.HTTP_SEE_OTHER ||
-                status == 307 || status == 308
-
-            if (!isRedirect) return connection
-
-            val location = connection.getHeaderField("Location")
-            connection.disconnect()
-            if (location.isNullOrBlank()) {
-                throw IOException("Сервер перенаправил загрузку без адреса назначения.")
-            }
-
-            val nextUrl = URL(currentUrl, location)
-            if (!nextUrl.protocol.equals("https", ignoreCase = true)) {
-                throw IOException("Сервер вернул небезопасное перенаправление загрузки.")
-            }
-            currentUrl = nextUrl
-
-            if (redirectCount == 7) {
-                throw IOException("Слишком много перенаправлений при загрузке модели.")
+        context.assets.open(MODEL_ASSET_NAME).buffered().use { input ->
+            FileOutputStream(temporaryModelFile).buffered().use { output ->
+                val buffer = ByteArray(256 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    digest.update(buffer, 0, count)
+                    copiedBytes += count
+                    _state.update {
+                        it.copy(
+                            setupBytes = copiedBytes,
+                            setupProgress = if (totalBytes > 0L) (copiedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
+                        )
+                    }
+                }
+                output.flush()
             }
         }
-        throw IOException("Не удалось открыть адрес загрузки модели.")
+
+        val actualHash = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        if (actualHash != EXPECTED_MODEL_SHA256) {
+            temporaryModelFile.delete()
+            throw IOException("Встроенная модель повреждена: проверка SHA-256 не пройдена.")
+        }
+        if (modelFile.exists() && !modelFile.delete()) {
+            throw IOException("Не удалось заменить старый файл модели.")
+        }
+        if (!temporaryModelFile.renameTo(modelFile)) {
+            throw IOException("Не удалось сохранить встроенную модель.")
+        }
+        _state.update { it.copy(modelExists = true, setupProgress = 1f, setupBytes = copiedBytes) }
     }
 
     private fun sha256(file: File): String {
@@ -438,10 +324,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val knowledge = LocalKnowledgeBase.findRelevant(cleaned)
                 val modelInput = if (knowledge.isBlank()) cleaned else
                     "Дополнительные сведения из локальной базы VectorAI. Используй их, если они относятся к вопросу; не выдумывай недостающие факты.\n$knowledge\n\nВопрос пользователя: $cleaned"
-                activeConversation.sendMessageAsync(
-                    modelInput,
-                    extraContext = mapOf("enable_thinking" to false)
-                ).collect { chunk ->
+                activeConversation.sendMessageAsync(modelInput).collect { chunk ->
                     answer.append(chunk.toString())
                     updateLastAssistant(answer.toString())
                 }
