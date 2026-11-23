@@ -48,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -60,6 +61,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.border
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -73,11 +75,31 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import java.time.LocalTime
 
-private val Black = Color(0xFF000000)
-private val Panel = Color(0xFF101010)
-private val Red = Color(0xFFFF343B)
-private val SoftWhite = Color(0xFFEDEDED)
-private val Muted = Color(0xFF858585)
+private var Black by mutableStateOf(Color(0xFF000000))
+private var Panel by mutableStateOf(Color(0xFF101010))
+private var Red by mutableStateOf(Color(0xFFFF343B))
+private var SoftWhite by mutableStateOf(Color(0xFFEDEDED))
+private var Muted by mutableStateOf(Color(0xFF858585))
+
+private val AccentColors = listOf(
+    Color(0xFFE53935), // Красный
+    Color(0xFFFB8C00), // Оранжевый
+    Color(0xFFFDD835), // Жёлтый
+    Color(0xFF43A047), // Зелёный
+    Color(0xFF1E88E5), // Голубой
+    Color(0xFF3949AB), // Синий
+    Color(0xFF8E24AA)  // Фиолетовый
+)
+private val AccentNames = listOf("Красный", "Оранжевый", "Жёлтый", "Зелёный", "Голубой", "Синий", "Фиолетовый")
+
+private fun applyAppearance(theme: String, accentIndex: Int) {
+    val light = theme == "light"
+    Black = if (light) Color(0xFFF7F7F7) else Color(0xFF000000)
+    Panel = if (light) Color(0xFFFFFFFF) else Color(0xFF101010)
+    SoftWhite = if (light) Color(0xFF171717) else Color(0xFFEDEDED)
+    Muted = if (light) Color(0xFF666666) else Color(0xFF858585)
+    Red = AccentColors[accentIndex.coerceIn(0, AccentColors.lastIndex)]
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -98,6 +120,21 @@ private fun VectorAIApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val preferences = remember {
         context.getSharedPreferences("vectorai_settings", android.content.Context.MODE_PRIVATE)
+    }
+    var selectedTheme by rememberSaveable {
+        mutableStateOf(preferences.getString("app_theme", "dark").orEmpty().ifBlank { "dark" })
+    }
+    var selectedAccent by rememberSaveable {
+        mutableStateOf(preferences.getInt("accent_color", 0).coerceIn(0, AccentColors.lastIndex))
+    }
+    SideEffect {
+        applyAppearance(selectedTheme, selectedAccent)
+        val window = (context as? android.app.Activity)?.window
+        val systemBar = if (selectedTheme == "light") android.graphics.Color.rgb(247, 247, 247) else android.graphics.Color.BLACK
+        window?.statusBarColor = systemBar
+        window?.navigationBarColor = systemBar
+        window?.decorView?.systemUiVisibility =
+            if (selectedTheme == "light") android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR else 0
     }
     var userName by rememberSaveable {
         mutableStateOf(preferences.getString("user_name", "").orEmpty())
@@ -146,7 +183,17 @@ private fun VectorAIApp() {
                 onSelectChat = chatViewModel::selectChat,
                 onDeleteChat = chatViewModel::deleteChat,
                 onSendMessage = chatViewModel::send,
-                onDownloadModel = chatViewModel::startDownload
+                onDownloadModel = chatViewModel::startDownload,
+                selectedTheme = selectedTheme,
+                selectedAccent = selectedAccent,
+                onThemeChange = {
+                    selectedTheme = it
+                    preferences.edit().putString("app_theme", it).apply()
+                },
+                onAccentChange = {
+                    selectedAccent = it
+                    preferences.edit().putInt("accent_color", it).apply()
+                }
             )
         }
 
@@ -202,7 +249,11 @@ private fun MainNavigation(
     onSelectChat: (String) -> Unit,
     onDeleteChat: (String) -> Unit,
     onSendMessage: (String) -> Unit,
-    onDownloadModel: () -> Unit
+    onDownloadModel: () -> Unit,
+    selectedTheme: String,
+    selectedAccent: Int,
+    onThemeChange: (String) -> Unit,
+    onAccentChange: (Int) -> Unit
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -254,7 +305,7 @@ private fun MainNavigation(
                         }
                     }
                     Spacer(Modifier.weight(1f))
-                    Divider(color = Color.White.copy(alpha = 0.12f))
+                    Divider(color = SoftWhite.copy(alpha = 0.12f))
                     Spacer(Modifier.height(14.dp))
                     Text(
                         "Версия приложения 0.3.0",
@@ -267,7 +318,13 @@ private fun MainNavigation(
         }
     ) {
         when (currentPage) {
-            "settings" -> SettingsScreen(userName = userName)
+            "settings" -> SettingsScreen(
+                userName = userName,
+                selectedTheme = selectedTheme,
+                selectedAccent = selectedAccent,
+                onThemeChange = onThemeChange,
+                onAccentChange = onAccentChange
+            )
             else -> ChatScreen(
                 userName = userName,
                 onMenu = { scope.launch { drawerState.open() } },
@@ -285,7 +342,7 @@ private fun MainNavigation(
 private fun DrawerEntry(title: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-            .background(if (selected) Color.White.copy(alpha = 0.07f) else Color.Transparent)
+            .background(if (selected) SoftWhite.copy(alpha = 0.07f) else Color.Transparent)
             .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -412,7 +469,7 @@ private fun ChatScreen(
                         Box(
                             modifier = Modifier.fillMaxWidth(0.88f)
                                 .clip(RoundedCornerShape(16.dp))
-                                .background(if (message.isUser) Color(0xFF251113) else Color(0xFF171717))
+                                .background(if (message.isUser) Red.copy(alpha = 0.16f) else Panel)
                                 .padding(14.dp)
                         ) {
                             Text(message.text, color = SoftWhite, fontSize = 14.sp, lineHeight = 20.sp)
@@ -470,7 +527,13 @@ private fun ChatScreen(
 }
 
 @Composable
-private fun SettingsScreen(userName: String) {
+private fun SettingsScreen(
+    userName: String,
+    selectedTheme: String,
+    selectedAccent: Int,
+    onThemeChange: (String) -> Unit,
+    onAccentChange: (Int) -> Unit
+) {
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding().padding(top = 22.dp, start = 22.dp, end = 22.dp, bottom = 22.dp)) {
         Text("Настройки", color = SoftWhite, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(24.dp))
@@ -479,10 +542,53 @@ private fun SettingsScreen(userName: String) {
         Text("Имя", color = Muted, fontSize = 13.sp)
         Text(userName, color = SoftWhite, fontSize = 17.sp)
         Spacer(Modifier.height(24.dp))
-        Divider(color = Color.White.copy(alpha = 0.12f))
-        Spacer(Modifier.height(18.dp))
-        Text("Внешний вид", color = SoftWhite, fontSize = 16.sp)
-        Text("Чёрная тема с красными акцентами", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+        Divider(color = SoftWhite.copy(alpha = 0.12f))
+        Spacer(Modifier.height(22.dp))
+
+        Text("Тема", color = SoftWhite, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+        Text("Выберите оформление приложения", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 5.dp))
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf("light" to "Светлая", "dark" to "Тёмная").forEach { (value, label) ->
+                val selected = selectedTheme == value
+                Box(
+                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) Red.copy(alpha = 0.14f) else Panel)
+                        .border(if (selected) 1.5.dp else 1.dp, if (selected) Red else Muted.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                        .clickable { onThemeChange(value) }
+                        .padding(vertical = 15.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(label, color = if (selected) Red else SoftWhite, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        Divider(color = SoftWhite.copy(alpha = 0.12f))
+        Spacer(Modifier.height(20.dp))
+        Text("Акцентный цвет", color = SoftWhite, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+        Text("Выберите один из семи цветов радуги", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 5.dp))
+        Spacer(Modifier.height(16.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            AccentColors.forEachIndexed { index, color ->
+                val selected = selectedAccent == index
+                Box(
+                    modifier = Modifier.size(36.dp).clip(CircleShape)
+                        .background(color)
+                        .border(if (selected) 3.dp else 1.dp, if (selected) SoftWhite else color.copy(alpha = 0.45f), CircleShape)
+                        .clickable { onAccentChange(index) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (selected) {
+                        Text("✓", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+        Text(AccentNames[selectedAccent], color = Red, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp))
+        Spacer(Modifier.height(24.dp))
+        Divider(color = SoftWhite.copy(alpha = 0.12f))
         Spacer(Modifier.height(18.dp))
         Text("Анимация фона", color = SoftWhite, fontSize = 16.sp)
         Text("Геометрические элементы активны", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
@@ -512,7 +618,7 @@ private fun AnimatedGeometryBackground() {
             val angle = kotlin.math.sin(phase * 0.6f + i * 0.41f) * 0.8f
             val endX = x + kotlin.math.sin(angle) * length
             val endY = y + kotlin.math.cos(angle) * length
-            val color = if (i % 3 == 0 || i % 3 == 1) Red.copy(alpha = 0.17f) else Color.White.copy(alpha = 0.13f)
+            val color = if (i % 3 == 0 || i % 3 == 1) Red.copy(alpha = 0.17f) else SoftWhite.copy(alpha = 0.13f)
             drawLine(color = color, start = androidx.compose.ui.geometry.Offset(x, y), end = androidx.compose.ui.geometry.Offset(endX, endY), strokeWidth = if (i % 5 == 0) 2.1f else 1.25f)
             if (i % 4 == 0) {
                 drawCircle(color = color.copy(alpha = 0.8f), radius = 2.2f + (i % 3), center = androidx.compose.ui.geometry.Offset(endX, endY))
@@ -545,7 +651,7 @@ private fun vectorFieldColors() = OutlinedTextFieldDefaults.colors(
     focusedTextColor = SoftWhite,
     unfocusedTextColor = SoftWhite,
     focusedBorderColor = Red,
-    unfocusedBorderColor = Color.White.copy(alpha = 0.22f),
+    unfocusedBorderColor = SoftWhite.copy(alpha = 0.22f),
     focusedLabelColor = Red,
     unfocusedLabelColor = Muted,
     cursorColor = Red,
