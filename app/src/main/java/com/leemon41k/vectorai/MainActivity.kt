@@ -183,7 +183,7 @@ private fun VectorAIApp() {
                 onSelectChat = chatViewModel::selectChat,
                 onDeleteChat = chatViewModel::deleteChat,
                 onSendMessage = chatViewModel::send,
-                onDownloadModel = chatViewModel::startDownload,
+                onRetryModel = chatViewModel::prepare,
                 selectedTheme = selectedTheme,
                 selectedAccent = selectedAccent,
                 onThemeChange = {
@@ -249,7 +249,7 @@ private fun MainNavigation(
     onSelectChat: (String) -> Unit,
     onDeleteChat: (String) -> Unit,
     onSendMessage: (String) -> Unit,
-    onDownloadModel: () -> Unit,
+    onRetryModel: () -> Unit,
     selectedTheme: String,
     selectedAccent: Int,
     onThemeChange: (String) -> Unit,
@@ -308,7 +308,7 @@ private fun MainNavigation(
                     Divider(color = SoftWhite.copy(alpha = 0.12f))
                     Spacer(Modifier.height(14.dp))
                     Text(
-                        "Версия приложения 0.3.0",
+                        "Версия приложения 0.4.0",
                         color = Color(0xFF777777),
                         fontSize = 12.sp,
                         modifier = Modifier.padding(vertical = 8.dp, horizontal = 2.dp)
@@ -332,7 +332,7 @@ private fun MainNavigation(
                 chatId = currentThreadId,
                 chatState = chatState,
                 onSendMessage = onSendMessage,
-                onDownloadModel = onDownloadModel
+                onRetryModel = onRetryModel
             )
         }
     }
@@ -360,7 +360,7 @@ private fun ChatScreen(
     chatId: String,
     chatState: ChatUiState,
     onSendMessage: (String) -> Unit,
-    onDownloadModel: () -> Unit
+    onRetryModel: () -> Unit
 ) {
     var draft by rememberSaveable(chatId) { mutableStateOf("") }
     val greeting = greetingForCurrentTime()
@@ -393,61 +393,42 @@ private fun ChatScreen(
 
                 if (!chatState.modelReady) {
                     Spacer(Modifier.height(28.dp))
-                    when {
-                        chatState.isDownloading -> {
-                            Text("Загружаю локальную модель…", color = SoftWhite, fontSize = 14.sp)
-                            Spacer(Modifier.height(12.dp))
-                            LinearProgressIndicator(
-                                progress = chatState.downloadProgress,
-                                modifier = Modifier.fillMaxWidth(),
-                                color = Red,
-                                trackColor = Color.White.copy(alpha = 0.12f)
+                    if (chatState.isLoading) {
+                        Text("Подготавливаю встроенную модель VectorAI…", color = Muted, fontSize = 14.sp)
+                        Spacer(Modifier.height(10.dp))
+                        LinearProgressIndicator(
+                            progress = chatState.setupProgress,
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Red,
+                            trackColor = SoftWhite.copy(alpha = 0.12f)
+                        )
+                        if (chatState.setupBytes > 0L) {
+                            Text(
+                                "${chatState.setupBytes / 1_000_000} МБ подготовлено · ${(chatState.setupProgress * 100).toInt()}%",
+                                color = Muted,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(top = 7.dp)
                             )
+                        }
+                    } else {
+                        Text(
+                            "Встроенная локальная модель пока не готова.",
+                            color = Muted,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp
+                        )
+                        chatState.error?.let {
                             Spacer(Modifier.height(8.dp))
-                            val downloadedMb = chatState.downloadedBytes / 1_000_000
-                            Text("$downloadedMb / ${chatState.totalBytes / 1_000_000} МБ · ${(chatState.downloadProgress * 100).toInt()}%", color = Muted, fontSize = 12.sp)
-                            val speedMb = chatState.downloadSpeed / 1_000_000.0
-                            val eta = chatState.remainingSeconds
-                            Text(
-                                (if (speedMb > 0) String.format(java.util.Locale.getDefault(), "%.1f МБ/с", speedMb) else "Скорость рассчитывается…") +
-                                    if (eta >= 0L) " · осталось ${eta / 60} мин ${eta % 60} сек" else "",
-                                color = Muted,
-                                fontSize = 12.sp
-                            )
+                            Text(it, color = Color(0xFFFF7777), fontSize = 12.sp, lineHeight = 17.sp)
                         }
-                        chatState.isLoading -> {
-                            Text("Запускаю VectorAI…", color = Muted, fontSize = 14.sp)
-                            Spacer(Modifier.height(10.dp))
-                            LinearProgressIndicator(
-                                modifier = Modifier.fillMaxWidth(),
-                                color = Red,
-                                trackColor = Color.White.copy(alpha = 0.12f)
-                            )
-                        }
-                        else -> {
-                            Text(
-                                "Для первого запуска нужно скачать локальную модель VectorAI (около 1,6 ГБ). Загрузка происходит прямо в приложении. После установки помощник сможет работать офлайн.",
-                                color = Muted,
-                                fontSize = 13.sp,
-                                lineHeight = 19.sp
-                            )
-                            chatState.error?.let {
-                                Spacer(Modifier.height(8.dp))
-                                Text(it, color = Color(0xFFFF7777), fontSize = 12.sp, lineHeight = 17.sp)
-                            }
-                            Spacer(Modifier.height(14.dp))
-                            Button(
-                                onClick = onDownloadModel,
-                                modifier = Modifier.fillMaxWidth().height(50.dp),
-                                shape = RoundedCornerShape(14.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Red)
-                            ) {
-                                Text(
-                                    if (chatState.downloadedBytes > 0L) "Продолжить загрузку" else "Скачать модель",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
+                        Spacer(Modifier.height(14.dp))
+                        Button(
+                            onClick = onRetryModel,
+                            modifier = Modifier.fillMaxWidth().height(50.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Red)
+                        ) {
+                            Text("Повторить запуск", color = Color.White, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -567,8 +548,8 @@ private fun SettingsScreen(
         Spacer(Modifier.height(24.dp))
         Divider(color = SoftWhite.copy(alpha = 0.12f))
         Spacer(Modifier.height(20.dp))
-        Text("Акцентный цвет", color = SoftWhite, fontSize = 17.sp, fontWeight = FontWeight.Medium)
-        Text("Выберите один из семи цветов радуги", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 5.dp))
+        Text("Акцент и цвет приложения", color = SoftWhite, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+        Text("Выберите акцентный цвет приложения", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 5.dp))
         Spacer(Modifier.height(16.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             AccentColors.forEachIndexed { index, color ->
