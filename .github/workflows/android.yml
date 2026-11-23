@@ -36,12 +36,20 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
+      - name: Download bundled Qwen3 INT4 model
+        run: |
+          mkdir -p app/src/main/assets
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://huggingface.co/litert-community/Qwen3-0.6B-int4/resolve/main/qwen3_0.6b_nothink_q4_block32_ekv1280.litertlm" \
+            --output app/src/main/assets/vectorai-qwen3-0.6b-int4.litertlm
+          echo "2df6821ec12702dafd33915e7a1a1adc7c4b053f3672fd9555dfaf3a114c4139  app/src/main/assets/vectorai-qwen3-0.6b-int4.litertlm" | sha256sum --check
+
       - name: Build debug APK
         run: gradle assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: VectorAI-0.3.0-debug
+          name: VectorAI-0.4.0-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
